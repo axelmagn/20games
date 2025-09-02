@@ -1,0 +1,17 @@
+.{
+    .name = .tbirb,
+    .version = "0.0.1",
+    .dependencies = .{
+        .sokol = .{
+            .url = "git+https://github.com/floooh/sokol-zig.git#bb5e02de69cf41016ae9119eed3af95516eeb8b6",
+            .hash = "sokol-0.1.0-pb1HKwkOLgDSO8KxBjhmyyqJb4ttYZ2c-xXezpYd5vlr",
+        },
+        .zalgebra = .{
+            .url = "git+https://github.com/kooparse/zalgebra.git#4a85a7102f0b82f445395049f0c660c70264d170",
+            .hash = "zalgebra-0.0.0-aaiVSpBuAQD7rPuHRn9qd3wREcRVSnN95Ves7atzsiQY",
+        },
+    },
+    .minimum_zig_version = "0.15.1",
+    .paths = .{""},
+    .fingerprint = 0xa2ec6535a3cf641c,
+}

@@ -6,6 +6,8 @@
 const std = @import("std");
 const mem = std.mem;
 const math = std.math;
+const debug = std.debug;
+const heap = std.heap;
 const sokol = @import("sokol");
 const slog = sokol.log;
 const sgfx = sokol.gfx;
@@ -16,15 +18,32 @@ const za = @import("zalgebra");
 const shd_solid = @import("shaders/solid.glsl.zig");
 
 /// root global for app state
-var _app: App = .{};
+var main_app: *App = undefined;
+
+var main_app_config = AppConfig{};
+
+const AppConfig = struct {
+    tile_size: i32 = 8,
+    aspect_width: i32 = 10,
+    aspect_height: i32 = 16,
+    aspect_factor: i32 = 4,
+
+    fn window_width(self: AppConfig) i32 {
+        return self.tile_size * self.aspect_width * self.aspect_factor;
+    }
+
+    fn window_height(self: AppConfig) i32 {
+        return self.tile_size * self.aspect_height * self.aspect_factor;
+    }
+};
 
 pub fn main() void {
     sapp.run(.{
         .init_cb = init,
         .frame_cb = frame,
         .cleanup_cb = cleanup,
-        .width = _app.win.width,
-        .height = _app.win.height,
+        .width = main_app_config.window_width(),
+        .height = main_app_config.window_height(),
         .sample_count = 4,
         .icon = .{ .sokol_default = true },
         .window_title = "cube.zig",
@@ -32,14 +51,24 @@ pub fn main() void {
     });
 }
 
+const Error = error{} || mem.Allocator.Error;
+
 export fn init() void {
-    _app.init();
+    var gpa = heap.GeneralPurposeAllocator(.{}){};
+    var allocator = gpa.allocator();
+    main_app = allocator.create(App) catch |err| {
+        const trace = @errorReturnTrace().?.*;
+        debug.dumpStackTrace(trace);
+        debug.panic("initialization error: {any}", .{err});
+    };
+    main_app.* = .{};
+    main_app.init(allocator, main_app_config);
 }
 export fn frame() void {
-    _app.frame();
+    main_app.frame();
 }
 export fn cleanup() void {
-    _app.cleanup();
+    main_app.cleanup();
 }
 
 pub const App = struct {
@@ -60,7 +89,6 @@ pub const App = struct {
         // vertex buffer bindings
         const VB_quad = 0;
     } = .{},
-
     /// window information
     win: struct {
         // go for 16:9 aspect ratios
@@ -68,8 +96,14 @@ pub const App = struct {
         height: i32 = 960,
     } = .{},
 
-    pub fn init(self: *App) void {
-        // TODO: allocators
+    pub fn init(self: *App, gpa: mem.Allocator, app_config: AppConfig) void {
+        self.gpa = gpa;
+
+        // TODO: arena allocator
+
+        self.win.width = app_config.window_width();
+        self.win.height = app_config.window_height();
+
         stime.setup();
         sgfx.setup(.{
             .environment = sglue.environment(),
@@ -125,6 +159,7 @@ pub const App = struct {
             .clear_value = .{ .r = 0.1, .g = 0.1, .b = 0.1, .a = 1 },
         };
     }
+
     pub fn frame(self: *App) void {
         // prep draw parameters
         const t: f32 = @floatCast(stime.sec(stime.now()));
@@ -165,12 +200,59 @@ pub const App = struct {
         sgfx.endPass();
         sgfx.commit();
     }
+
     pub fn cleanup(_: *App) void {
         sgfx.shutdown();
     }
 };
 
-const Game = struct {};
+const Game = struct {
+    camera: Camera = undefined,
+    entities: [max_entities]?Entity = .{null} ** max_entities,
+
+    const max_entities = 256;
+
+    pub fn init(self: *Game, app_config: AppConfig) void {
+        self.camera.size = za.Vec2.new(
+            app_config.window_width(),
+            app_config.window_height(),
+        );
+    }
+};
+
+const Camera = struct {
+    position: za.Vec2 = za.Vec2.zero(),
+    size: za.Vec2,
+};
+
+const Entity = struct {
+    position: za.Vec2,
+    z_layer: u8,
+    color_quad: ?ColorQuad,
+};
+
+/// a component for entities that correspond to a drawable quad
+const ColorQuad = struct {
+    size: za.Vec2,
+    color: za.Vec4,
+};
+
+const ColorQuadPipeline = struct {
+    pipe: sgfx.Pipeline = .{},
+    bind: sgfx.Bindings = .{},
+
+    // vertex buffer bindings
+    const VB_quad = 0;
+
+    const quad_verts = [_]f32{
+        0, 0,
+        0, 1,
+        1, 1,
+        1, 0,
+    };
+
+    fn init() 
+};
 
 /// cast a numeric type to another
 pub fn ncast(T: type, x: anytype) T {

@@ -33,10 +33,17 @@ const AppConfig = struct {
     shader_srcs: []const []const u8,
 
     fn build(self: AppConfig, b: *Build) !*Step {
+        const is_wasm = self.target.result.cpu.arch.isWasm();
+
         const dep_sokol = b.dependency("sokol", .{
             .target = self.target,
             .optimize = self.optimize,
+            // force gl backend on non-web targets
+            // DirectX / metal have different transform bounds
+            .gl = !is_wasm,
         });
+
+        // var mod_sokol = dep_sokol.module("sokol");
         const dep_zalgebra = b.dependency("zalgebra", .{
             .target = self.target,
             .optimize = self.optimize,
@@ -58,7 +65,7 @@ const AppConfig = struct {
             },
         });
 
-        if (self.target.result.cpu.arch.isWasm()) {
+        if (is_wasm) {
             return self.buildWeb(b, mod, shader_src_steps, dep_sokol);
         } else {
             return self.buildNative(b, mod, shader_src_steps);
@@ -145,9 +152,9 @@ fn createShaderModule(
         .slang = .{
             .glsl410 = true,
             .glsl300es = true,
-            .hlsl4 = true,
-            .metal_macos = true,
-            .wgsl = true,
+            // .hlsl4 = true,
+            // .metal_macos = true,
+            // .wgsl = true,
         },
     });
     return mod_shd;

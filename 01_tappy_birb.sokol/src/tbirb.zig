@@ -131,7 +131,7 @@ const Game = struct {
         // create some test entities at the center of the screen
         self.entities[0] = Entity{
             .position = za.Vec2.new(win_widthf / 2 - 32, win_heightf / 2 - 32),
-            .acceleration = za.Vec2.new(0, -10),
+            .acceleration = za.Vec2.new(0, -512),
             .z_layer = 0,
             .color_quad = .{
                 .size = za.Vec2.new(64, 64),
@@ -161,10 +161,11 @@ const Game = struct {
     pub fn tick(self: *Game) void {
         const dt = sapp.frameDuration();
 
-        for (0.., self.entities) |i, entity_opt| {
-            var entity = entity_opt orelse continue;
+        for (0..self.entities.len) |i| {
+            if (self.entities[i] == null) continue;
+            var entity: *Entity = &(self.entities[i].?);
             entity.apply_kinematics(dt);
-            debug.print("{d}: {any}\n", .{ i, entity.position });
+            // debug.print("{d}: {any}\n", .{ i, entity.position });
         }
     }
 };
@@ -194,9 +195,12 @@ const Entity = struct {
     color_quad: ?ColorQuad = null,
 
     pub fn apply_kinematics(self: *Entity, dt: f64) void {
-        const dtv = za.Vec2.set(@floatCast(dt));
-        self.position = self.position.add(self.velocity.mul(dtv));
-        self.velocity = self.position.add(self.acceleration.mul(dtv));
+        const dtf = ncast(f32, dt);
+        const dtv = za.Vec2.set(dtf);
+        const dx = self.velocity.mul(dtv);
+        self.position = self.position.add(dx);
+        const dv = self.acceleration.mul(dtv);
+        self.velocity = self.velocity.add(dv);
     }
 };
 
@@ -272,6 +276,7 @@ const ColorQuadPipeline = struct {
 
         // shader pipeline
         const backend = sgfx.queryBackend();
+        // debug.print("DETECTED BACKEND: {any}", .{backend});
         const shader = sgfx.makeShader(shd_solid.solidShaderDesc(backend));
         var vert_layout = sgfx.VertexLayoutState{};
         vert_layout.attrs[shd_solid.ATTR_solid_position_in].format = .FLOAT2;

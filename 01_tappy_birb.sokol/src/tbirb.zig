@@ -27,7 +27,7 @@ const AppConfig = struct {
     tile_size: i32 = 8,
     aspect_width: i32 = 10,
     aspect_height: i32 = 16,
-    aspect_factor: i32 = 4,
+    aspect_factor: i32 = 6,
 
     fn window_width(self: AppConfig) i32 {
         return self.tile_size * self.aspect_width * self.aspect_factor;
@@ -80,16 +80,6 @@ pub const App = struct {
     /// game state
     game: Game = .{},
 
-    /// graphics subsystems
-    // gfx: struct {
-    //     pipe: sgfx.Pipeline = .{},
-    //     bind: sgfx.Bindings = .{},
-    //     pass_action: sgfx.PassAction = .{},
-    //     view: za.Mat4 = undefined,
-    //
-    //     // vertex buffer bindings
-    //     const VB_quad = 0;
-    // } = .{},
     renderer: Renderer = .{},
 
     /// window information
@@ -110,99 +100,11 @@ pub const App = struct {
         stime.setup();
         self.game.init(app_config);
         self.renderer.init();
-        // sgfx.setup(.{
-        //     .environment = sglue.environment(),
-        //     .logger = .{ .func = slog.func },
-        // });
-
-        // // quad vertex buffer
-        // self.gfx.bind.vertex_buffers[0] = sgfx.makeBuffer(.{
-        //     .data = sgfx.asRange(&[_]f32{
-        //         // positions
-        //         -0.5, 0.5, // top left
-        //         0.5, 0.5, // top right
-        //         0.5, -0.5, // bottom right
-        //         -0.5, -0.5, // bottom left
-        //         // -1.0, 1.0, // top left
-        //         // 1.0, 1.0, // top right
-        //         // 1.0, -1.0, // bottom right
-        //         // -1.0, -1.0, // bottom left
-        //     }),
-        // });
-        //
-        // // quad index buffer
-        // self.gfx.bind.index_buffer = sgfx.makeBuffer(.{
-        //     .usage = .{ .index_buffer = true },
-        //     .data = sgfx.asRange(&[_]u16{
-        //         0, 1, 2,
-        //         2, 3, 0,
-        //     }),
-        // });
-        //
-        // // shader pipeline
-        // const backend = sgfx.queryBackend();
-        // const shader = sgfx.makeShader(shd_solid.solidShaderDesc(backend));
-        // var vert_layout = sgfx.VertexLayoutState{};
-        // vert_layout.attrs[shd_solid.ATTR_solid_position_in].format = .FLOAT2;
-        // self.gfx.pipe = sgfx.makePipeline(.{
-        //     .shader = shader,
-        //     .layout = vert_layout,
-        //     .index_type = .UINT16,
-        //     .depth = .{
-        //         .compare = .LESS_EQUAL,
-        //         .write_enabled = true,
-        //     },
-        //     .cull_mode = .BACK,
-        // });
-
-        // framebuffer clear color
-        // self.gfx.pass_action.colors[0] = .{
-        //     .load_action = .CLEAR,
-        //     // TODO: real colors
-        //     .clear_value = .{ .r = 0.1, .g = 0.1, .b = 0.1, .a = 1 },
-        // };
     }
 
     pub fn frame(self: *App) void {
+        self.game.tick();
         self.renderer.draw(self.game);
-        // prep draw parameters
-        // const t: f32 = @floatCast(stime.sec(stime.now()));
-        // const model_xform = za.Mat4.identity().scale(
-        //     za.Vec3.new(200 + math.cos(t) * 100, 200 + math.sin(t) * 100, 1),
-        // ).translate(
-        //     za.Vec3.new(
-        //         ncast(f32, self.win.width) / 2 + math.cos(t) * 100,
-        //         ncast(f32, self.win.height) / 2 + math.sin(t) * 100,
-        //         0,
-        //     ),
-        // );
-        // const vs_params = shd_solid.VsParams{
-        //     .model = model_xform,
-        //     .view = za.orthographic(
-        //         0,
-        //         ncast(f32, self.win.width),
-        //         0,
-        //         ncast(f32, self.win.height),
-        //         -1,
-        //         1,
-        //     ),
-        // };
-        // const fs_params = shd_solid.FsParams{
-        //     .color = za.Vec4.new(0.9, 0.9, 0.9, 1.0).data,
-        // };
-        //
-        // // draw call
-        // sgfx.beginPass(.{
-        //     .action = self.gfx.pass_action,
-        //     .swapchain = sglue.swapchain(),
-        // });
-        // sgfx.applyPipeline(self.gfx.pipe);
-        // sgfx.applyBindings(self.gfx.bind);
-        // sgfx.applyUniforms(shd_solid.UB_vs_params, sgfx.asRange(&vs_params));
-        // sgfx.applyUniforms(shd_solid.UB_fs_params, sgfx.asRange(&fs_params));
-        // sgfx.draw(0, 6, 1);
-        // sgfx.endPass();
-        // sgfx.commit();
     }
 
     pub fn cleanup(_: *App) void {
@@ -226,14 +128,44 @@ const Game = struct {
         // TODO: decouple canvas from window
         self.camera.size = za.Vec2.new(win_widthf, win_heightf);
 
-        // create a test entity at the center of the screen
+        // create some test entities at the center of the screen
         self.entities[0] = Entity{
             .position = za.Vec2.new(win_widthf / 2 - 32, win_heightf / 2 - 32),
+            .acceleration = za.Vec2.new(0, -10),
+            .z_layer = 0,
             .color_quad = .{
                 .size = za.Vec2.new(64, 64),
                 .color = za.Vec4.new(0.9, 0.5, 0.5, 1),
             },
         };
+        self.entities[1] = Entity{
+            .position = za.Vec2.new(win_widthf / 2 - 16, win_heightf / 2 - 16),
+            .velocity = za.Vec2.new(100, 100),
+            .z_layer = 1,
+            .color_quad = .{
+                .size = za.Vec2.new(64, 64),
+                .color = za.Vec4.new(0.5, 0.9, 0.5, 1),
+            },
+        };
+        self.entities[2] = Entity{
+            .position = za.Vec2.new(win_widthf / 2, win_heightf / 2),
+            .velocity = za.Vec2.new(-100, 100),
+            .z_layer = 2,
+            .color_quad = .{
+                .size = za.Vec2.new(64, 64),
+                .color = za.Vec4.new(0.5, 0.5, 0.9, 1),
+            },
+        };
+    }
+
+    pub fn tick(self: *Game) void {
+        const dt = sapp.frameDuration();
+
+        for (0.., self.entities) |i, entity_opt| {
+            var entity = entity_opt orelse continue;
+            entity.apply_kinematics(dt);
+            debug.print("{d}: {any}\n", .{ i, entity.position });
+        }
     }
 };
 
@@ -247,17 +179,25 @@ const Camera = struct {
             self.position.x() + self.size.x(),
             self.position.y(),
             self.position.y() + self.size.y(),
-            // TODO: test to see if this works with z=0
-            -256,
-            256,
+            -128,
+            128,
         );
     }
 };
 
 const Entity = struct {
     position: za.Vec2 = za.Vec2.zero(),
-    z_layer: u8 = 0,
+    velocity: za.Vec2 = za.Vec2.zero(),
+    acceleration: za.Vec2 = za.Vec2.zero(),
+    // higher on top
+    z_layer: i8 = 0,
     color_quad: ?ColorQuad = null,
+
+    pub fn apply_kinematics(self: *Entity, dt: f64) void {
+        const dtv = za.Vec2.set(@floatCast(dt));
+        self.position = self.position.add(self.velocity.mul(dtv));
+        self.velocity = self.position.add(self.acceleration.mul(dtv));
+    }
 };
 
 /// a component for entities that correspond to a drawable quad

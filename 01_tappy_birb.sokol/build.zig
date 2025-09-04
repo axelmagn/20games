@@ -21,7 +21,8 @@ pub fn build(b: *Build) !void {
             "src/shaders/solid.glsl",
         },
     };
-    try tbirb.build(b);
+    const run_step_inner = try tbirb.build(b);
+    b.step("run", "Run tbirb").dependOn(run_step_inner);
 }
 
 const AppConfig = struct {
@@ -31,7 +32,7 @@ const AppConfig = struct {
     root_src: LazyPath,
     shader_srcs: []const []const u8,
 
-    fn build(self: AppConfig, b: *Build) !void {
+    fn build(self: AppConfig, b: *Build) !*Step {
         const dep_sokol = b.dependency("sokol", .{
             .target = self.target,
             .optimize = self.optimize,
@@ -58,13 +59,13 @@ const AppConfig = struct {
         });
 
         if (self.target.result.cpu.arch.isWasm()) {
-            try self.buildWeb(b, mod, shader_src_steps, dep_sokol);
+            return self.buildWeb(b, mod, shader_src_steps, dep_sokol);
         } else {
-            try self.buildNative(b, mod, shader_src_steps);
+            return self.buildNative(b, mod, shader_src_steps);
         }
     }
 
-    fn buildNative(self: AppConfig, b: *Build, mod: *Module, shdc_steps: []*Step) !void {
+    fn buildNative(self: AppConfig, b: *Build, mod: *Module, shdc_steps: []*Step) !*Step {
         const exe = b.addExecutable(.{
             .name = self.name,
             .root_module = mod,
@@ -76,10 +77,12 @@ const AppConfig = struct {
         }
 
         const run = b.addRunArtifact(exe);
-        b.step(
+        const run_step = b.step(
             b.fmt("run-{s}", .{self.name}),
             b.fmt("Run {s}", .{self.name}),
-        ).dependOn(&run.step);
+        );
+        run_step.dependOn(&run.step);
+        return run_step;
     }
 
     fn buildWeb(
@@ -88,7 +91,7 @@ const AppConfig = struct {
         mod: *Module,
         shdc_steps: []*Step,
         dep_sokol: *Dependency,
-    ) !void {
+    ) !*Step {
         const lib = b.addLibrary(.{
             .name = self.name,
             .root_module = mod,
@@ -115,10 +118,12 @@ const AppConfig = struct {
         // and a special run step to start the web output
         const run = sokol.emRunStep(b, .{ .name = self.name, .emsdk = emsdk });
         run.step.dependOn(&link_step.step);
-        b.step(
+        var run_step = b.step(
             b.fmt("run-{s}", .{self.name}),
             b.fmt("Run {s}", .{self.name}),
-        ).dependOn(&run.step);
+        );
+        run_step.dependOn(&run.step);
+        return run_step;
     }
 };
 

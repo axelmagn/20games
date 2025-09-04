@@ -108,6 +108,7 @@ pub const App = struct {
         self.win.height = app_config.window_height();
 
         stime.setup();
+        self.game.init(app_config);
         self.renderer.init();
         // sgfx.setup(.{
         //     .environment = sglue.environment(),
@@ -223,13 +224,13 @@ const Game = struct {
 
         // set up camera based on window size
         // TODO: decouple canvas from window
-        self.camera.size = za.Vec2.new(win_width, win_height);
+        self.camera.size = za.Vec2.new(win_widthf, win_heightf);
 
         // create a test entity at the center of the screen
         self.entities[0] = Entity{
             .position = za.Vec2.new(win_widthf / 2 - 32, win_heightf / 2 - 32),
             .color_quad = .{
-                .size = 64,
+                .size = za.Vec2.new(64, 64),
                 .color = za.Vec4.new(0.9, 0.5, 0.5, 1),
             },
         };
@@ -247,7 +248,7 @@ const Camera = struct {
             self.position.y(),
             self.position.y() + self.size.y(),
             // TODO: test to see if this works with z=0
-            -1,
+            -256,
             256,
         );
     }
@@ -342,7 +343,7 @@ const ColorQuadPipeline = struct {
                 .compare = .LESS_EQUAL,
                 .write_enabled = true,
             },
-            .cull_mode = .BACK,
+            .cull_mode = .NONE,
         });
     }
 

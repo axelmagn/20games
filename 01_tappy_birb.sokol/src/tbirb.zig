@@ -15,6 +15,7 @@ const sgfx = sokol.gfx;
 const sapp = sokol.app;
 const sglue = sokol.glue;
 const stime = sokol.time;
+const sdtx = sokol.debugtext;
 const za = @import("zalgebra");
 const shd_solid = @import("shaders/solid.glsl.zig");
 
@@ -131,11 +132,14 @@ const Game = struct {
         // create some test entities at the center of the screen
         self.entities[0] = Entity{
             .position = za.Vec2.new(win_widthf / 2 - 32, win_heightf / 2 - 32),
-            .acceleration = za.Vec2.new(0, -512),
+            .acceleration = za.Vec2.new(0, 512),
             .z_layer = 0,
             .color_quad = .{
                 .size = za.Vec2.new(64, 64),
                 .color = za.Vec4.new(0.9, 0.5, 0.5, 1),
+            },
+            .debug_text = .{
+                .text = "birb",
             },
         };
         self.entities[1] = Entity{
@@ -193,6 +197,7 @@ const Entity = struct {
     // higher on top
     z_layer: i8 = 0,
     color_quad: ?ColorQuad = null,
+    debug_text: ?DebugText = null,
 
     pub fn apply_kinematics(self: *Entity, dt: f64) void {
         const dtf = ncast(f32, dt);
@@ -210,8 +215,18 @@ const ColorQuad = struct {
     color: za.Vec4,
 };
 
+const DebugText = struct {
+    text: []const u8,
+    font_idx: u8 = 0,
+    grid_pos: za.Vec2 = za.Vec2.zero(),
+    // alpha is ignored
+    color: sgfx.Color = .{ .r = 1, .g = 1, .b = 1, .a = 1 },
+    offset: za.Vec2 = za.Vec2.zero(),
+};
+
 const Renderer = struct {
     color_quad_pipe: ColorQuadPipeline = .{},
+    debug_text_pipe: DebugTextPipeline = .{},
     clear_color: sgfx.Color = .{ .r = 0.1, .g = 0.1, .b = 0.1, .a = 1 },
 
     fn init(self: *Renderer) void {
@@ -221,10 +236,14 @@ const Renderer = struct {
         });
 
         self.color_quad_pipe.init();
+        DebugTextPipeline.init();
     }
 
     fn draw(self: Renderer, game: Game) void {
-        // begin pass
+        // DebugTextPipeline.hello_world();
+        self.debug_text_pipe.resetCanvas();
+
+        // begin p{ass
         var pass_action: sgfx.PassAction = .{};
         pass_action.colors[0] = .{
             .load_action = .CLEAR,
@@ -236,7 +255,11 @@ const Renderer = struct {
         for (game.entities) |entity_opt| {
             const entity = entity_opt orelse continue;
             self.color_quad_pipe.draw_quad(entity, game.camera);
+            self.debug_text_pipe.print(entity);
         }
+
+        // draw debug text
+        sdtx.draw();
 
         // finish and commit pass
         sgfx.endPass();
@@ -276,7 +299,7 @@ const ColorQuadPipeline = struct {
 
         // shader pipeline
         const backend = sgfx.queryBackend();
-        // debug.print("DETECTED BACKEND: {any}", .{backend});
+        debug.print("DETECTED BACKEND: {any}", .{backend});
         const shader = sgfx.makeShader(shd_solid.solidShaderDesc(backend));
         var vert_layout = sgfx.VertexLayoutState{};
         vert_layout.attrs[shd_solid.ATTR_solid_position_in].format = .FLOAT2;
@@ -306,11 +329,11 @@ const ColorQuadPipeline = struct {
             1,
         )).translate(za.Vec3.new(
             entity.position.x(),
-            entity.position.y(),
+            sapp.heightf() - entity.position.y(),
             ncast(f32, entity.z_layer),
         ));
 
-        // prepare uniforms
+        // prepare uniforms0.9
         const vs_params = shd_solid.VsParams{
             .model = model_xform,
             .view = camera.viewTransform(),
@@ -325,6 +348,61 @@ const ColorQuadPipeline = struct {
         sgfx.applyUniforms(shd_solid.UB_vs_params, sgfx.asRange(&vs_params));
         sgfx.applyUniforms(shd_solid.UB_fs_params, sgfx.asRange(&fs_params));
         sgfx.draw(0, quad_idxs.len, 1);
+    }
+};
+
+const DebugTextPipeline = struct {
+    // font scale in pixels
+    font_px: f32 = 16,
+
+    const kc854 = 0;
+    const c64 = 1;
+    const oric = 2;
+
+    pub fn init() void {
+        sdtx.setup(.{
+            .fonts = blk: {
+                var f: [8]sdtx.FontDesc = @splat(.{});
+                f[kc854] = sdtx.fontKc854();
+                f[c64] = sdtx.fontC64();
+                f[oric] = sdtx.fontOric();
+                break :blk f;
+            },
+            .logger = .{ .func = slog.func },
+        });
+    }
+
+    pub fn hello_world() void {
+        sdtx.canvas(sapp.widthf() * 0.5, sapp.heightf() * 0.5);
+        sdtx.origin(3, 3);
+
+        sdtx.font(c64);
+        sdtx.color3b(200, 100, 200);
+        sdtx.print("Hello World!", .{});
+    }
+
+    pub fn resetCanvas(self: DebugTextPipeline) void {
+        sdtx.canvas(
+            sapp.widthf() * 8 / self.font_px,
+            sapp.heightf() * 8 / self.font_px,
+        );
+        sdtx.origin(0, 0);
+    }
+
+    pub fn print(self: DebugTextPipeline, entity: Entity) void {
+        const dtext = entity.debug_text orelse return;
+        sdtx.font(dtext.font_idx);
+        sdtx.color3f(
+            dtext.color.r,
+            dtext.color.g,
+            dtext.color.b,
+        );
+        sdtx.pos(
+            // convert from grid coords to px coords
+            entity.position.x() / self.font_px,
+            entity.position.y() / self.font_px,
+        );
+        sdtx.print("{s}", .{dtext.text});
     }
 };
 

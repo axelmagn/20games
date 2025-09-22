@@ -49,12 +49,15 @@ const AppConfig = struct {
             .optimize = self.optimize,
         });
 
+        try patch_sokol_with_fontstash(b, dep_sokol);
+
         const shader_src_steps: []*Step =
             try b.allocator.alloc(*Step, self.shader_srcs.len);
 
         for (self.shader_srcs, shader_src_steps) |src, *step| {
             step.* = try createShaderSource(b, src, dep_sokol);
         }
+
         const mod = b.createModule(.{
             .root_source_file = self.root_src,
             .target = self.target,
@@ -64,6 +67,7 @@ const AppConfig = struct {
                 .{ .name = "zalgebra", .module = dep_zalgebra.module("zalgebra") },
             },
         });
+        mod.linkLibrary(dep_sokol.artifact("sokol_clib"));
 
         if (is_wasm) {
             return self.buildWeb(b, mod, shader_src_steps, dep_sokol);
@@ -131,6 +135,32 @@ const AppConfig = struct {
         );
         run_step.dependOn(&run.step);
         return run_step;
+    }
+
+    fn patch_sokol_with_fontstash(b: *Build, dep_sokol: *Dependency) !void {
+        const mod_sokol = dep_sokol.module("mod_sokol_clib");
+
+        mod_sokol.addIncludePath(b.path("src/c/sokol_patch/"));
+        mod_sokol.addIncludePath(dep_sokol.path("src/sokol/c"));
+
+        const cflags = try extract_sokol_cflags(dep_sokol);
+        mod_sokol.addCSourceFile(.{
+            .file = b.path("src/c/sokol_patch/fontstash.c"),
+            .flags = cflags,
+            .language = .c,
+        });
+        mod_sokol.link_libc = true;
+    }
+
+    /// just grab the cflags of the first file we find
+    fn extract_sokol_cflags(dep_sokol: *Dependency) ![]const []const u8 {
+        const mod_sokol = dep_sokol.module("mod_sokol_clib");
+        for (mod_sokol.link_objects.items) |lobj| {
+            if (lobj == .c_source_file) {
+                return lobj.c_source_file.flags;
+            }
+        }
+        return error.no_csrc_found;
     }
 };
 

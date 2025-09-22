@@ -9,6 +9,7 @@ const math = std.math;
 const debug = std.debug;
 const assert = std.debug.assert;
 const heap = std.heap;
+const log = std.log;
 const sokol = @import("sokol");
 const slog = sokol.log;
 const sgfx = sokol.gfx;
@@ -17,7 +18,9 @@ const sglue = sokol.glue;
 const stime = sokol.time;
 const sdtx = sokol.debugtext;
 const za = @import("zalgebra");
+const lm32 = @import("zlm").as(f32);
 const shd_solid = @import("shaders/solid.glsl.zig");
+const fons = @import("fontstash.zig");
 
 /// root global for app state
 var main_app: *App = undefined;
@@ -127,12 +130,14 @@ const Game = struct {
 
         // set up camera based on window size
         // TODO: decouple canvas from window
+        self.camera.position = za.Vec2.new(0, 0);
         self.camera.size = za.Vec2.new(win_widthf, win_heightf);
 
         // create some test entities at the center of the screen
         self.entities[0] = Entity{
-            .position = za.Vec2.new(win_widthf / 2 - 32, win_heightf / 2 - 32),
-            .acceleration = za.Vec2.new(0, 512),
+            .position = za.Vec2.new(win_widthf * 0.5 - 32, win_heightf * 0.5 - 32),
+            .velocity = za.Vec2.new(0, 0),
+            .acceleration = za.Vec2.new(0, -10),
             .z_layer = 0,
             .color_quad = .{
                 .size = za.Vec2.new(64, 64),
@@ -142,24 +147,24 @@ const Game = struct {
                 .text = "birb",
             },
         };
-        self.entities[1] = Entity{
-            .position = za.Vec2.new(win_widthf / 2 - 16, win_heightf / 2 - 16),
-            .velocity = za.Vec2.new(100, 100),
-            .z_layer = 1,
-            .color_quad = .{
-                .size = za.Vec2.new(64, 64),
-                .color = za.Vec4.new(0.5, 0.9, 0.5, 1),
-            },
-        };
-        self.entities[2] = Entity{
-            .position = za.Vec2.new(win_widthf / 2, win_heightf / 2),
-            .velocity = za.Vec2.new(-100, 100),
-            .z_layer = 2,
-            .color_quad = .{
-                .size = za.Vec2.new(64, 64),
-                .color = za.Vec4.new(0.5, 0.5, 0.9, 1),
-            },
-        };
+        // self.entities[1] = Entity{
+        //     .position = za.Vec2.new(win_widthf / 2 - 16, win_heightf / 2 - 16),
+        //     .velocity = za.Vec2.new(100, 100),
+        //     .z_layer = 1,
+        //     .color_quad = .{
+        //         .size = za.Vec2.new(64, 64),
+        //         .color = za.Vec4.new(0.5, 0.9, 0.5, 1),
+        //     },
+        // };
+        // self.entities[2] = Entity{
+        //     .position = za.Vec2.new(win_widthf / 2, win_heightf / 2),
+        //     .velocity = za.Vec2.new(-100, 100),
+        //     .z_layer = 2,
+        //     .color_quad = .{
+        //         .size = za.Vec2.new(64, 64),
+        //         .color = za.Vec4.new(0.5, 0.5, 0.9, 1),
+        //     },
+        // };
     }
 
     pub fn tick(self: *Game) void {
@@ -168,7 +173,7 @@ const Game = struct {
         for (0..self.entities.len) |i| {
             if (self.entities[i] == null) continue;
             var entity: *Entity = &(self.entities[i].?);
-            entity.apply_kinematics(dt);
+            entity.applyKinematics(dt);
             // debug.print("{d}: {any}\n", .{ i, entity.position });
         }
     }
@@ -199,13 +204,40 @@ const Entity = struct {
     color_quad: ?ColorQuad = null,
     debug_text: ?DebugText = null,
 
-    pub fn apply_kinematics(self: *Entity, dt: f64) void {
+    pub fn applyKinematics(self: *Entity, dt: f64) void {
         const dtf = ncast(f32, dt);
         const dtv = za.Vec2.set(dtf);
         const dx = self.velocity.mul(dtv);
         self.position = self.position.add(dx);
         const dv = self.acceleration.mul(dtv);
         self.velocity = self.velocity.add(dv);
+    }
+
+    pub fn modelTransform(self: Entity) za.Mat4 {
+        assert(self.color_quad != null);
+        var model_xform = za.Mat4.identity();
+        model_xform = model_xform.scale(za.Vec3.new(
+            self.color_quad.?.size.x(),
+            self.color_quad.?.size.y(),
+            1,
+        ));
+        model_xform = model_xform.translate(za.Vec3.new(
+            self.position.x(),
+            self.position.y(),
+            ncast(f32, self.z_layer),
+        ));
+        return model_xform;
+    }
+
+    pub fn debugTextTransform(self: Entity) za.Mat4 {
+        assert(self.color_quad != null);
+        var model_xform = za.Mat4.identity();
+        model_xform = model_xform.translate(za.Vec3.new(
+            self.position.x(),
+            self.position.y(),
+            ncast(f32, self.z_layer),
+        ));
+        return model_xform;
     }
 };
 
@@ -243,7 +275,7 @@ const Renderer = struct {
         // DebugTextPipeline.hello_world();
         self.debug_text_pipe.resetCanvas();
 
-        // begin p{ass
+        // begin pass
         var pass_action: sgfx.PassAction = .{};
         pass_action.colors[0] = .{
             .load_action = .CLEAR,
@@ -255,7 +287,7 @@ const Renderer = struct {
         for (game.entities) |entity_opt| {
             const entity = entity_opt orelse continue;
             self.color_quad_pipe.draw_quad(entity, game.camera);
-            self.debug_text_pipe.print(entity);
+            self.debug_text_pipe.print(entity, game.camera);
         }
 
         // draw debug text
@@ -320,22 +352,9 @@ const ColorQuadPipeline = struct {
         entity: Entity,
         camera: Camera,
     ) void {
-        assert(entity.color_quad != null);
-
-        // calculate model transform
-        const model_xform = za.Mat4.identity().scale(za.Vec3.new(
-            entity.color_quad.?.size.x(),
-            entity.color_quad.?.size.y(),
-            1,
-        )).translate(za.Vec3.new(
-            entity.position.x(),
-            sapp.heightf() - entity.position.y(),
-            ncast(f32, entity.z_layer),
-        ));
-
-        // prepare uniforms0.9
+        // prepare uniforms
         const vs_params = shd_solid.VsParams{
-            .model = model_xform,
+            .model = entity.modelTransform(),
             .view = camera.viewTransform(),
         };
         const fs_params = shd_solid.FsParams{
@@ -373,23 +392,34 @@ const DebugTextPipeline = struct {
     }
 
     pub fn hello_world() void {
-        sdtx.canvas(sapp.widthf() * 0.5, sapp.heightf() * 0.5);
-        sdtx.origin(3, 3);
+        const font_scale: f32 = 8.0 / 16.0;
+        const w = sapp.widthf() * font_scale;
+        const h = sapp.heightf() * font_scale;
+        sdtx.canvas(w, h);
+        sdtx.origin(0, 0);
 
         sdtx.font(c64);
         sdtx.color3b(200, 100, 200);
-        sdtx.print("Hello World!", .{});
+
+        for (0..256) |i| {
+            const y: f32 = ncast(f32, i);
+            sdtx.pos(3, y);
+            sdtx.print("{d}", .{i});
+        }
+
+        // sdtx.print("Hello World!", .{});
     }
 
     pub fn resetCanvas(self: DebugTextPipeline) void {
-        sdtx.canvas(
-            sapp.widthf() * 8 / self.font_px,
-            sapp.heightf() * 8 / self.font_px,
-        );
+        // sdtx.canvas(1, 1);
+        const font_scale = 8 / self.font_px;
+        const canvas_w = sapp.widthf() * font_scale;
+        const canvas_h = sapp.heightf() * font_scale;
+        sdtx.canvas(canvas_w, canvas_h);
         sdtx.origin(0, 0);
     }
 
-    pub fn print(self: DebugTextPipeline, entity: Entity) void {
+    pub fn print(self: DebugTextPipeline, entity: Entity, camera: Camera) void {
         const dtext = entity.debug_text orelse return;
         sdtx.font(dtext.font_idx);
         sdtx.color3f(
@@ -397,10 +427,25 @@ const DebugTextPipeline = struct {
             dtext.color.g,
             dtext.color.b,
         );
+
+        const text_xform = entity.debugTextTransform();
+        const view_xform = camera.viewTransform();
+        const clip_xform = za.orthographic(-3, 1, 3, -1, -1, 1);
+        var pos = za.Vec4.new(0, 0, 0, 1);
+        pos = text_xform.mulByVec4(pos);
+        pos = view_xform.mulByVec4(pos);
+        pos = clip_xform.mulByVec4(pos);
+
+        const font_scale = 8 / self.font_px;
+        const canvas_w = sapp.widthf() * font_scale;
+        const canvas_h = sapp.heightf() * font_scale;
+        pos.data[0] *= canvas_w / 8;
+        pos.data[1] *= canvas_h / 8;
+
         sdtx.pos(
             // convert from grid coords to px coords
-            entity.position.x() / self.font_px,
-            entity.position.y() / self.font_px,
+            pos.x(),
+            pos.y(),
         );
         sdtx.print("{s}", .{dtext.text});
     }

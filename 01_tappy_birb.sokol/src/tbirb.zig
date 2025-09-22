@@ -33,6 +33,14 @@ const AppConfig = struct {
     aspect_height: i32 = 16,
     aspect_factor: i32 = 6,
 
+    player: struct {
+        size: f32 = 32,
+        x0: f32 = 0.3,
+        y0: f32 = 0.6,
+        acc: f32 = -256,
+        color: za.Vec4 = za.Vec4.new(0.9, 0.5, 0.5, 1),
+    } = .{},
+
     fn window_width(self: AppConfig) i32 {
         return self.tile_size * self.aspect_width * self.aspect_factor;
     }
@@ -88,8 +96,10 @@ pub const App = struct {
 
     /// window information
     win: struct {
-        // go for 16:9 aspect ratios
-        width: i32 = 540,
+        // 16:9
+        // width: i32 = 540,
+        // 16:10
+        width: i32 = 600,
         height: i32 = 960,
     } = .{},
 
@@ -134,37 +144,7 @@ const Game = struct {
         self.camera.size = za.Vec2.new(win_widthf, win_heightf);
 
         // create some test entities at the center of the screen
-        self.entities[0] = Entity{
-            .position = za.Vec2.new(win_widthf * 0.5 - 32, win_heightf * 0.5 - 32),
-            .velocity = za.Vec2.new(0, 0),
-            .acceleration = za.Vec2.new(0, -10),
-            .z_layer = 0,
-            .color_quad = .{
-                .size = za.Vec2.new(64, 64),
-                .color = za.Vec4.new(0.9, 0.5, 0.5, 1),
-            },
-            .debug_text = .{
-                .text = "birb",
-            },
-        };
-        // self.entities[1] = Entity{
-        //     .position = za.Vec2.new(win_widthf / 2 - 16, win_heightf / 2 - 16),
-        //     .velocity = za.Vec2.new(100, 100),
-        //     .z_layer = 1,
-        //     .color_quad = .{
-        //         .size = za.Vec2.new(64, 64),
-        //         .color = za.Vec4.new(0.5, 0.9, 0.5, 1),
-        //     },
-        // };
-        // self.entities[2] = Entity{
-        //     .position = za.Vec2.new(win_widthf / 2, win_heightf / 2),
-        //     .velocity = za.Vec2.new(-100, 100),
-        //     .z_layer = 2,
-        //     .color_quad = .{
-        //         .size = za.Vec2.new(64, 64),
-        //         .color = za.Vec4.new(0.5, 0.5, 0.9, 1),
-        //     },
-        // };
+        self.entities[0] = createPlayer(app_config);
     }
 
     pub fn tick(self: *Game) void {
@@ -174,8 +154,29 @@ const Game = struct {
             if (self.entities[i] == null) continue;
             var entity: *Entity = &(self.entities[i].?);
             entity.applyKinematics(dt);
-            // debug.print("{d}: {any}\n", .{ i, entity.position });
         }
+    }
+
+    pub fn createPlayer(app_config: AppConfig) Entity {
+        const size = app_config.player.size;
+        const hsize = app_config.player.size / 2;
+        const x = app_config.player.x0;
+        const y = app_config.player.y0;
+        const w = ncast(f32, app_config.window_width());
+        const h = ncast(f32, app_config.window_height());
+
+        return Entity{
+            .position = za.Vec2.new(w * x - hsize, h * y - hsize),
+            .acceleration = za.Vec2.new(0, app_config.player.acc),
+            .z_layer = 0,
+            .color_quad = .{
+                .size = za.Vec2.new(size, size),
+                .color = app_config.player.color,
+            },
+            .debug_text = .{
+                .text = "birb",
+            },
+        };
     }
 };
 

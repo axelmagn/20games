@@ -38,7 +38,18 @@ const AppConfig = struct {
         x0: f32 = 0.3,
         y0: f32 = 0.6,
         acc: f32 = -256,
-        color: za.Vec4 = za.Vec4.new(0.9, 0.5, 0.5, 1),
+        color: Color = Color.gray3,
+    } = .{},
+
+    ground: struct {
+        height: f32 = 64,
+        color: Color = Color.gray2,
+    } = .{},
+
+    wall: struct {
+        width: f32 = 64,
+        speed: f32 = -256,
+        color: Color = Color.gray1,
     } = .{},
 
     fn window_width(self: AppConfig) i32 {
@@ -48,6 +59,43 @@ const AppConfig = struct {
     fn window_height(self: AppConfig) i32 {
         return self.tile_size * self.aspect_height * self.aspect_factor;
     }
+};
+
+const Color = struct {
+    r: f32 = 0,
+    g: f32 = 0,
+    b: f32 = 0,
+    a: f32 = 1,
+
+    fn new(r: f32, g: f32, b: f32, a: f32) Color {
+        return Color{
+            .r = r,
+            .g = g,
+            .b = b,
+            .a = a,
+        };
+    }
+
+    fn to(self: *const Color, T: type) T {
+        return switch (T) {
+            sgfx.Color => sgfx.Color{
+                .r = self.r,
+                .g = self.g,
+                .b = self.b,
+                .a = self.a,
+            },
+            za.Vec4 => za.Vec4.new(self.r, self.g, self.b, self.a),
+            else => @compileError("unexpected color type: " ++ @typeName(T)),
+        };
+    }
+
+    const white = Color.new(1.0, 1.0, 1.0, 1.0);
+    const black = Color.new(0.0, 0.0, 0.0, 1.0);
+
+    const gray0 = Color.new(0.2, 0.2, 0.2, 1.0);
+    const gray1 = Color.new(0.4, 0.4, 0.4, 1.0);
+    const gray2 = Color.new(0.6, 0.6, 0.6, 1.0);
+    const gray3 = Color.new(0.8, 0.8, 0.8, 1.0);
 };
 
 pub fn main() void {
@@ -145,6 +193,10 @@ const Game = struct {
 
         // create some test entities at the center of the screen
         self.entities[0] = createPlayer(app_config);
+        self.entities[1] = createGround(app_config);
+        // TODO: dynamically spawn walls
+        self.entities[2] = createBottomWall(app_config, 256);
+        self.entities[3] = createTopWall(app_config, 256);
     }
 
     pub fn tick(self: *Game) void {
@@ -168,13 +220,60 @@ const Game = struct {
         return Entity{
             .position = za.Vec2.new(w * x - hsize, h * y - hsize),
             .acceleration = za.Vec2.new(0, app_config.player.acc),
-            .z_layer = 0,
+            .size = za.Vec2.new(size, size),
+            .z_layer = 30,
             .color_quad = .{
-                .size = za.Vec2.new(size, size),
                 .color = app_config.player.color,
             },
             .debug_text = .{
                 .text = "birb",
+            },
+        };
+    }
+
+    /// create the ground obstacle
+    pub fn createGround(app_config: AppConfig) Entity {
+        const w = ncast(f32, app_config.window_width());
+        const h = app_config.ground.height;
+
+        const x = 0;
+        const y = 0;
+
+        return Entity{
+            .position = za.Vec2.new(x, y),
+            .size = za.Vec2.new(w, h),
+            .z_layer = 20,
+            .color_quad = .{
+                .color = app_config.ground.color,
+            },
+        };
+    }
+
+    /// create a wall obstacle offscreen to the right, attached to the bottom of the screen
+    pub fn createBottomWall(app_config: AppConfig, height: f32) Entity {
+        const x = ncast(f32, app_config.window_width());
+        return Entity{
+            .position = za.Vec2.new(x, 0),
+            .size = za.Vec2.new(app_config.wall.width, height),
+            .velocity = za.Vec2.new(app_config.wall.speed, 0),
+            .z_layer = 10,
+            .color_quad = .{
+                .color = app_config.wall.color,
+            },
+        };
+    }
+
+    /// create a wall obstacle offscreen to the right, attached to the top of the screen
+    pub fn createTopWall(app_config: AppConfig, height: f32) Entity {
+        const x = ncast(f32, app_config.window_width());
+        const y = ncast(f32, app_config.window_height()) - height;
+        return Entity{
+            .position = za.Vec2.new(x, y),
+            .size = za.Vec2.new(app_config.wall.width, height),
+            .velocity = za.Vec2.new(app_config.wall.speed, 0),
+            .z_layer = 10,
+            .color_quad = .{
+                .color = app_config.wall.color,
             },
         };
     }
@@ -200,6 +299,7 @@ const Entity = struct {
     position: za.Vec2 = za.Vec2.zero(),
     velocity: za.Vec2 = za.Vec2.zero(),
     acceleration: za.Vec2 = za.Vec2.zero(),
+    size: za.Vec2 = za.Vec2.zero(),
     // higher on top
     z_layer: i8 = 0,
     color_quad: ?ColorQuad = null,
@@ -218,8 +318,8 @@ const Entity = struct {
         assert(self.color_quad != null);
         var model_xform = za.Mat4.identity();
         model_xform = model_xform.scale(za.Vec3.new(
-            self.color_quad.?.size.x(),
-            self.color_quad.?.size.y(),
+            self.size.x(),
+            self.size.y(),
             1,
         ));
         model_xform = model_xform.translate(za.Vec3.new(
@@ -244,8 +344,7 @@ const Entity = struct {
 
 /// a component for entities that correspond to a drawable quad
 const ColorQuad = struct {
-    size: za.Vec2,
-    color: za.Vec4,
+    color: Color,
 };
 
 const DebugText = struct {
@@ -253,14 +352,14 @@ const DebugText = struct {
     font_idx: u8 = 0,
     grid_pos: za.Vec2 = za.Vec2.zero(),
     // alpha is ignored
-    color: sgfx.Color = .{ .r = 1, .g = 1, .b = 1, .a = 1 },
+    color: Color = Color.new(1, 1, 1, 1),
     offset: za.Vec2 = za.Vec2.zero(),
 };
 
 const Renderer = struct {
     color_quad_pipe: ColorQuadPipeline = .{},
     debug_text_pipe: DebugTextPipeline = .{},
-    clear_color: sgfx.Color = .{ .r = 0.1, .g = 0.1, .b = 0.1, .a = 1 },
+    clear_color: Color = Color.gray0,
 
     fn init(self: *Renderer) void {
         sgfx.setup(.{
@@ -280,7 +379,7 @@ const Renderer = struct {
         var pass_action: sgfx.PassAction = .{};
         pass_action.colors[0] = .{
             .load_action = .CLEAR,
-            .clear_value = self.clear_color,
+            .clear_value = self.clear_color.to(sgfx.Color),
         };
         sgfx.beginPass(.{ .action = pass_action, .swapchain = sglue.swapchain() });
 
@@ -304,7 +403,7 @@ const ColorQuadPipeline = struct {
     pipe: sgfx.Pipeline = .{},
     bind: sgfx.Bindings = .{},
 
-    /// vertex buffer bindings
+    /// vertex buffer bindings.
     const VB_quad = 0;
 
     /// quad mesh, with bottom left corner at origin
@@ -332,7 +431,6 @@ const ColorQuadPipeline = struct {
 
         // shader pipeline
         const backend = sgfx.queryBackend();
-        debug.print("DETECTED BACKEND: {any}", .{backend});
         const shader = sgfx.makeShader(shd_solid.solidShaderDesc(backend));
         var vert_layout = sgfx.VertexLayoutState{};
         vert_layout.attrs[shd_solid.ATTR_solid_position_in].format = .FLOAT2;
@@ -359,7 +457,7 @@ const ColorQuadPipeline = struct {
             .view = camera.viewTransform(),
         };
         const fs_params = shd_solid.FsParams{
-            .color = entity.color_quad.?.color.toArray(),
+            .color = entity.color_quad.?.color.to(za.Vec4).toArray(),
         };
 
         // draw call

@@ -98,6 +98,16 @@ const Color = struct {
     const gray3 = Color.new(0.8, 0.8, 0.8, 1.0);
 };
 
+const Event = struct {
+    sevent: sapp.Event,
+
+    fn from(ev: sapp.Event) Event {
+        return .{
+            .sevent = ev,
+        };
+    }
+};
+
 pub fn main() void {
     sapp.run(.{
         .init_cb = init,
@@ -125,9 +135,16 @@ export fn init() void {
     main_app.* = .{};
     main_app.init(allocator, main_app_config);
 }
+
 export fn frame() void {
     main_app.frame();
 }
+
+export fn event(sev: [*c]const sapp.Event) void {
+    const ev = Event.from(sev[0]);
+    main_app.event(ev);
+}
+
 export fn cleanup() void {
     main_app.cleanup();
 }
@@ -169,6 +186,10 @@ pub const App = struct {
         self.renderer.draw(self.game);
     }
 
+    pub fn event(self: *App, ev: Event) void {
+        self.game.handle_event(ev);
+    }
+
     pub fn cleanup(_: *App) void {
         sgfx.shutdown();
     }
@@ -177,6 +198,7 @@ pub const App = struct {
 const Game = struct {
     camera: Camera = undefined,
     entities: [max_entities]?Entity = .{null} ** max_entities,
+    stage: GameStage = undefined,
 
     const max_entities = 256;
 
@@ -209,6 +231,10 @@ const Game = struct {
         }
     }
 
+    pub fn handle_event(self: *Game, ev: Event) void {
+        self.stage.vtable.handle_event(self, ev);
+    }
+
     pub fn createPlayer(app_config: AppConfig) Entity {
         const size = app_config.player.size;
         const hsize = app_config.player.size / 2;
@@ -228,6 +254,7 @@ const Game = struct {
             .debug_text = .{
                 .text = "birb",
             },
+            .player = true,
         };
     }
 
@@ -279,6 +306,34 @@ const Game = struct {
     }
 };
 
+/// VTable for stage-specific game logic
+const GameStage = struct {
+    vtable: VTable,
+
+    const splash: GameStage = .{
+        .vtable = .{
+            .handle_event = Splash.handle_event,
+        },
+    };
+
+    const VTable = struct {
+        handle_event: *const fn (game: *Game, ev: sapp.Event) void,
+    };
+
+    const Splash = struct {
+        fn handle_event(_: *Game, ev: sapp.Event) void {
+            // press any key to start
+            if (ev.type == .KEY_DOWN or ev.type == .TOUCHES_BEGAN) {
+                // TODO: change stage
+            }
+        }
+    };
+
+    const Playing = struct {
+        fn handle_event(_: *Game, _: sapp.Event) void {}
+    };
+};
+
 const Camera = struct {
     position: za.Vec2 = za.Vec2.zero(),
     size: za.Vec2,
@@ -304,6 +359,8 @@ const Entity = struct {
     z_layer: i8 = 0,
     color_quad: ?ColorQuad = null,
     debug_text: ?DebugText = null,
+
+    player: bool = false,
 
     pub fn applyKinematics(self: *Entity, dt: f64) void {
         const dtf = ncast(f32, dt);
@@ -340,6 +397,8 @@ const Entity = struct {
         ));
         return model_xform;
     }
+
+    pub fn tickPlayer(self: *Entity, dt: f32) void {}
 };
 
 /// a component for entities that correspond to a drawable quad
@@ -550,7 +609,7 @@ const DebugTextPipeline = struct {
     }
 };
 
-/// cast a numeric type to another
+/// cast a compatible type to numeric
 pub fn ncast(T: type, x: anytype) T {
     const in_tinfo = @typeInfo(@TypeOf(x));
     const out_tinfo = @typeInfo(T);

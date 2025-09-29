@@ -51,6 +51,10 @@ const AppConfig = struct {
         width: f32 = 64,
         speed: f32 = -256,
         color: Color = Color.gray1,
+        // half-size of the hole in the pipes
+        hole_hsize: f32 = 64,
+        // spacing as a fraction of screen width
+        spacing_ratio: f32 = 0.5,
     } = .{},
 
     fn window_width(self: AppConfig) i32 {
@@ -287,10 +291,11 @@ pub const App = struct {
 const Game = struct {
     camera: Camera = undefined,
     entities: [max_entities]?Entity = .{null} ** max_entities,
-    events: RingBuf(Event, 256) = .{},
+    events: RingBuf(Event, max_events) = .{},
     stage: GameStage = GameStage.splash,
 
     const max_entities = 256;
+    const max_events = 256;
 
     pub fn init(self: *Game, app_config: AppConfig) void {
         const win_width = app_config.window_width();
@@ -304,11 +309,11 @@ const Game = struct {
         self.camera.size = za.Vec2.new(win_widthf, win_heightf);
 
         // create some test entities at the center of the screen
-        self.entities[0] = createPlayer(app_config);
-        self.entities[1] = createGround(app_config);
-        // TODO: dynamically spawn walls
-        self.entities[2] = createBottomWall(app_config, 256);
-        self.entities[3] = createTopWall(app_config, 256);
+        self.entities[0] = Entity.createPlayer();
+        self.entities[1] = Entity.createGround();
+        _ = self.initWalls(2, 4, win_widthf * 2);
+        // self.entities[2] = Entity.createBottomWall(win_widthf * 1.5, 256);
+        // self.entities[3] = Entity.createTopWall(win_widthf * 1.5, 256);
     }
 
     pub fn tick(self: *Game) void {
@@ -323,74 +328,21 @@ const Game = struct {
         }
     }
 
-    pub fn createPlayer(app_config: AppConfig) Entity {
-        const size = app_config.player.size;
-        const hsize = app_config.player.size / 2;
-        const x = app_config.player.x0;
-        const y = app_config.player.y0;
-        const w = ncast(f32, app_config.window_width());
-        const h = ncast(f32, app_config.window_height());
+    pub fn initWalls(self: *Game, idx: usize, count: usize, start_x: f32) usize {
+        assert(idx + count * 2 <= self.entities.len);
+        var x = start_x;
+        const app_config = main_app.config;
+        const win_widthf = ncast(f32, app_config.window_width());
+        const win_heightf = ncast(f32, app_config.window_height());
+        for (0..count) |i| {
+            var j = idx + i;
+            self.entities[j] = Entity.createBottomWall(x, (win_heightf / 2) - app_config.wall.hole_hsize);
+            j += 1;
+            self.entities[j] = Entity.createTopWall(x, (win_heightf / 2) - app_config.wall.hole_hsize);
+            x += app_config.wall.spacing_ratio * win_widthf;
+        }
 
-        return Entity{
-            .position = za.Vec2.new(w * x - hsize, h * y - hsize),
-            .acceleration = za.Vec2.new(0, app_config.player.acc),
-            .size = za.Vec2.new(size, size),
-            .z_layer = 30,
-            .color_quad = .{
-                .color = app_config.player.color,
-            },
-            .debug_text = .{
-                .text = "birb",
-            },
-            .player = true,
-        };
-    }
-
-    /// create the ground obstacle
-    pub fn createGround(app_config: AppConfig) Entity {
-        const w = ncast(f32, app_config.window_width());
-        const h = app_config.ground.height;
-
-        const x = 0;
-        const y = 0;
-
-        return Entity{
-            .position = za.Vec2.new(x, y),
-            .size = za.Vec2.new(w, h),
-            .z_layer = 20,
-            .color_quad = .{
-                .color = app_config.ground.color,
-            },
-        };
-    }
-
-    /// create a wall obstacle offscreen to the right, attached to the bottom of the screen
-    pub fn createBottomWall(app_config: AppConfig, height: f32) Entity {
-        const x = ncast(f32, app_config.window_width());
-        return Entity{
-            .position = za.Vec2.new(x, 0),
-            .size = za.Vec2.new(app_config.wall.width, height),
-            .velocity = za.Vec2.new(app_config.wall.speed, 0),
-            .z_layer = 10,
-            .color_quad = .{
-                .color = app_config.wall.color,
-            },
-        };
-    }
-
-    /// create a wall obstacle offscreen to the right, attached to the top of the screen
-    pub fn createTopWall(app_config: AppConfig, height: f32) Entity {
-        const x = ncast(f32, app_config.window_width());
-        const y = ncast(f32, app_config.window_height()) - height;
-        return Entity{
-            .position = za.Vec2.new(x, y),
-            .size = za.Vec2.new(app_config.wall.width, height),
-            .velocity = za.Vec2.new(app_config.wall.speed, 0),
-            .z_layer = 10,
-            .color_quad = .{
-                .color = app_config.wall.color,
-            },
-        };
+        return idx + count * 2;
     }
 };
 
@@ -415,10 +367,9 @@ const GameStage = struct {
     };
 
     const Splash = struct {
-
         fn tick(game: *Game, _: f64) void {
             // handle events
-            while(game.events.pop_front()) |ev| {
+            while (game.events.pop_front()) |ev| {
                 if (ev == .action and ev.action == .tap) {
                     game.stage = playing;
                     // push event back onto the queue so that player jumps
@@ -433,8 +384,8 @@ const GameStage = struct {
         fn tick(game: *Game, dt: f64) void {
             var jump = false;
 
-            while(game.events.pop_front()) |ev| {
-                if(ev == .action and ev.action == .tap) {
+            while (game.events.pop_front()) |ev| {
+                if (ev == .action and ev.action == .tap) {
                     jump = true;
                 }
             }
@@ -482,6 +433,77 @@ const Entity = struct {
     debug_text: ?DebugText = null,
 
     player: bool = false,
+    pub fn createPlayer() Entity {
+        const app_config = main_app.config;
+        const size = app_config.player.size;
+        const hsize = app_config.player.size / 2;
+        const x = app_config.player.x0;
+        const y = app_config.player.y0;
+        const w = ncast(f32, app_config.window_width());
+        const h = ncast(f32, app_config.window_height());
+
+        return Entity{
+            .position = za.Vec2.new(w * x - hsize, h * y - hsize),
+            .acceleration = za.Vec2.new(0, app_config.player.acc),
+            .size = za.Vec2.new(size, size),
+            .z_layer = 30,
+            .color_quad = .{
+                .color = app_config.player.color,
+            },
+            .debug_text = .{
+                .text = "birb",
+            },
+            .player = true,
+        };
+    }
+
+    /// create the ground obstacle
+    pub fn createGround() Entity {
+        const app_config = main_app.config;
+        const w = ncast(f32, app_config.window_width());
+        const h = app_config.ground.height;
+
+        const x = 0;
+        const y = 0;
+
+        return Entity{
+            .position = za.Vec2.new(x, y),
+            .size = za.Vec2.new(w, h),
+            .z_layer = 20,
+            .color_quad = .{
+                .color = app_config.ground.color,
+            },
+        };
+    }
+
+    /// create a wall obstacle offscreen to the right, attached to the bottom of the screen
+    pub fn createBottomWall(x: f32, height: f32) Entity {
+        const app_config = main_app.config;
+        return Entity{
+            .position = za.Vec2.new(x, 0),
+            .size = za.Vec2.new(app_config.wall.width, height),
+            .velocity = za.Vec2.new(app_config.wall.speed, 0),
+            .z_layer = 10,
+            .color_quad = .{
+                .color = app_config.wall.color,
+            },
+        };
+    }
+
+    /// create a wall obstacle offscreen to the right, attached to the top of the screen
+    pub fn createTopWall(x: f32, height: f32) Entity {
+        const app_config = main_app.config;
+        const y = ncast(f32, app_config.window_height()) - height;
+        return Entity{
+            .position = za.Vec2.new(x, y),
+            .size = za.Vec2.new(app_config.wall.width, height),
+            .velocity = za.Vec2.new(app_config.wall.speed, 0),
+            .z_layer = 10,
+            .color_quad = .{
+                .color = app_config.wall.color,
+            },
+        };
+    }
 
     pub fn applyKinematics(self: *Entity, dt: f64) void {
         const dtf = ncast(f32, dt);

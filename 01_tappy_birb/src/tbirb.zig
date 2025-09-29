@@ -37,8 +37,9 @@ const AppConfig = struct {
         size: f32 = 32,
         x0: f32 = 0.3,
         y0: f32 = 0.6,
-        acc: f32 = -256,
+        acc: f32 = -512,
         color: Color = Color.gray3,
+        jump_vel: f32 = 256,
     } = .{},
 
     ground: struct {
@@ -98,21 +99,106 @@ const Color = struct {
     const gray3 = Color.new(0.8, 0.8, 0.8, 1.0);
 };
 
-const Event = struct {
+const Event = union(enum) {
+    /// player action
+    action: InputAction,
+    // todo: collision
+};
+
+const InputAction = enum {
+    anykey,
+    tap,
+};
+
+const InputEvent = struct {
     sevent: sapp.Event,
 
-    fn from(ev: sapp.Event) Event {
+    fn from(ev: sapp.Event) InputEvent {
         return .{
             .sevent = ev,
         };
     }
+
+    fn isAnyKey(self: InputEvent) bool {
+        return (self.sevent.type == .KEY_DOWN or self.sevent.type == .TOUCHES_BEGAN);
+    }
+
+    fn isTap(self: InputEvent) bool {
+        // TODO: touch event
+        return (self.sevent.type == .KEY_DOWN and self.sevent.key_code == .SPACE);
+    }
 };
+
+fn RingBuf(T: type, size: usize) type {
+    if (size == 0) {
+        @compileError("size must be greater than zero");
+    }
+
+    return struct {
+        buf: [size]T = undefined,
+        start: usize = 0,
+        count: usize = 0,
+
+        fn push_back(self: *@This(), value: T) !void {
+            if (self.count == self.buf.len) {
+                return error.capacity_exceeded;
+            }
+            assert(self.count < self.buf.len);
+            const i = @rem(self.start + self.count, self.buf.len);
+            assert(i < self.buf.len);
+            self.buf[i] = value;
+            self.count += 1;
+        }
+
+        fn pop_back(self: *@This()) ?T {
+            if (self.count == 0) return null;
+            const i = @rem(self.start + self.count - 1, self.buf.len);
+            defer self.count -= 1;
+            return self.buf[i];
+        }
+
+        fn peek_back(self: @This()) ?T {
+            if (self.count == 0) return null;
+            const i = @rem(self.start + self.count - 1, self.buf.len);
+            return self.buf[i];
+        }
+
+        fn push_front(self: *@This(), value: T) !void {
+            if (self.count == self.buf.len) {
+                return error.capacity_exceeded;
+            }
+            assert(self.count < self.buf.len);
+            const i = @rem(self.buf.len + self.start - 1, self.buf.len);
+            assert(i < self.buf.len);
+            self.buf[i] = value;
+            self.start = i;
+            self.count += 1;
+        }
+
+        fn pop_front(self: *@This()) ?T {
+            if (self.count == 0) return null;
+            defer self.start = @rem(self.start + 1, self.buf.len);
+            defer self.count -= 1;
+            return self.buf[self.start];
+        }
+
+        fn peek_front(self: *@This()) ?T {
+            if (self.count == 0) return null;
+            return self.buf[self.start];
+        }
+
+        fn clear(self: *@This()) void {
+            self.count = 0;
+        }
+    };
+}
 
 pub fn main() void {
     sapp.run(.{
-        .init_cb = init,
-        .frame_cb = frame,
-        .cleanup_cb = cleanup,
+        .init_cb = sInit,
+        .frame_cb = sFrame,
+        .event_cb = sEvent,
+        .cleanup_cb = sCleanup,
         .width = main_app_config.window_width(),
         .height = main_app_config.window_height(),
         .sample_count = 4,
@@ -124,7 +210,7 @@ pub fn main() void {
 
 const Error = error{} || mem.Allocator.Error;
 
-export fn init() void {
+export fn sInit() void {
     var gpa = heap.GeneralPurposeAllocator(.{}){};
     var allocator = gpa.allocator();
     main_app = allocator.create(App) catch |err| {
@@ -136,16 +222,16 @@ export fn init() void {
     main_app.init(allocator, main_app_config);
 }
 
-export fn frame() void {
+export fn sFrame() void {
     main_app.frame();
 }
 
-export fn event(sev: [*c]const sapp.Event) void {
-    const ev = Event.from(sev[0]);
+export fn sEvent(sev: [*c]const sapp.Event) void {
+    const ev = InputEvent.from(sev[0]);
     main_app.event(ev);
 }
 
-export fn cleanup() void {
+export fn sCleanup() void {
     main_app.cleanup();
 }
 
@@ -153,6 +239,8 @@ pub const App = struct {
     /// general purpose allocator
     gpa: mem.Allocator = undefined,
     arena: mem.Allocator = undefined,
+
+    config: AppConfig = .{},
 
     /// game state
     game: Game = .{},
@@ -170,6 +258,7 @@ pub const App = struct {
 
     pub fn init(self: *App, gpa: mem.Allocator, app_config: AppConfig) void {
         self.gpa = gpa;
+        self.config = app_config;
 
         // TODO: arena allocator
 
@@ -186,8 +275,8 @@ pub const App = struct {
         self.renderer.draw(self.game);
     }
 
-    pub fn event(self: *App, ev: Event) void {
-        self.game.handle_event(ev);
+    pub fn event(self: *App, ev: InputEvent) void {
+        self.game.handleInputEvent(ev);
     }
 
     pub fn cleanup(_: *App) void {
@@ -198,7 +287,8 @@ pub const App = struct {
 const Game = struct {
     camera: Camera = undefined,
     entities: [max_entities]?Entity = .{null} ** max_entities,
-    stage: GameStage = undefined,
+    events: RingBuf(Event, 256) = .{},
+    stage: GameStage = GameStage.splash,
 
     const max_entities = 256;
 
@@ -223,16 +313,14 @@ const Game = struct {
 
     pub fn tick(self: *Game) void {
         const dt = sapp.frameDuration();
-
-        for (0..self.entities.len) |i| {
-            if (self.entities[i] == null) continue;
-            var entity: *Entity = &(self.entities[i].?);
-            entity.applyKinematics(dt);
-        }
+        self.stage.vtable.tick(self, dt);
     }
 
-    pub fn handle_event(self: *Game, ev: Event) void {
-        self.stage.vtable.handle_event(self, ev);
+    pub fn handleInputEvent(self: *Game, ev: InputEvent) void {
+        if (ev.isTap()) {
+            // log.debug("action: tap", .{});
+            self.events.push_back(.{ .action = .tap }) catch unreachable;
+        }
     }
 
     pub fn createPlayer(app_config: AppConfig) Entity {
@@ -312,25 +400,58 @@ const GameStage = struct {
 
     const splash: GameStage = .{
         .vtable = .{
-            .handle_event = Splash.handle_event,
+            .tick = Splash.tick,
+        },
+    };
+
+    const playing: GameStage = .{
+        .vtable = .{
+            .tick = Playing.tick,
         },
     };
 
     const VTable = struct {
-        handle_event: *const fn (game: *Game, ev: sapp.Event) void,
+        tick: *const fn (game: *Game, dt: f64) void,
     };
 
     const Splash = struct {
-        fn handle_event(_: *Game, ev: sapp.Event) void {
-            // press any key to start
-            if (ev.type == .KEY_DOWN or ev.type == .TOUCHES_BEGAN) {
-                // TODO: change stage
+
+        fn tick(game: *Game, _: f64) void {
+            // handle events
+            while(game.events.pop_front()) |ev| {
+                if (ev == .action and ev.action == .tap) {
+                    game.stage = playing;
+                    // push event back onto the queue so that player jumps
+                    game.events.push_front(ev) catch unreachable;
+                    return;
+                }
             }
         }
     };
 
     const Playing = struct {
-        fn handle_event(_: *Game, _: sapp.Event) void {}
+        fn tick(game: *Game, dt: f64) void {
+            var jump = false;
+
+            while(game.events.pop_front()) |ev| {
+                if(ev == .action and ev.action == .tap) {
+                    jump = true;
+                }
+            }
+
+            for (0..game.entities.len) |i| {
+                if (game.entities[i] == null) continue;
+                var entity: *Entity = &(game.entities[i].?);
+                entity.applyKinematics(dt);
+                if (jump and entity.player) {
+                    entity.jump();
+                }
+            }
+        }
+    };
+
+    const NoOp = struct {
+        fn tick(_: *Game, _: f64) void {}
     };
 };
 
@@ -398,7 +519,9 @@ const Entity = struct {
         return model_xform;
     }
 
-    pub fn tickPlayer(self: *Entity, dt: f32) void {}
+    pub fn jump(self: *Entity) void {
+        self.velocity.yMut().* = main_app_config.player.jump_vel;
+    }
 };
 
 /// a component for entities that correspond to a drawable quad

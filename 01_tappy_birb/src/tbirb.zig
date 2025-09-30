@@ -52,7 +52,7 @@ const AppConfig = struct {
         speed: f32 = -256,
         color: Color = Color.gray1,
         // half-size of the hole in the pipes
-        hole_hsize: f32 = 64,
+        hole_hsize: f32 = 96,
         // spacing as a fraction of screen width
         spacing_ratio: f32 = 0.5,
     } = .{},
@@ -124,12 +124,16 @@ const InputEvent = struct {
     }
 
     fn isAnyKey(self: InputEvent) bool {
-        return (self.sevent.type == .KEY_DOWN or self.sevent.type == .TOUCHES_BEGAN);
+        return self.sevent.type == .KEY_DOWN or self.sevent.type == .TOUCHES_BEGAN;
     }
 
     fn isTap(self: InputEvent) bool {
         // TODO: touch event
-        return (self.sevent.type == .KEY_DOWN and self.sevent.key_code == .SPACE);
+        return self.sevent.type == .KEY_DOWN and self.sevent.key_code == .SPACE;
+    }
+
+    fn isExit(self: InputEvent) bool {
+        return self.sevent.type == .KEY_DOWN and self.sevent.key_code == .ESCAPE;
     }
 };
 
@@ -293,6 +297,7 @@ const Game = struct {
     entities: [max_entities]?Entity = .{null} ** max_entities,
     events: RingBuf(Event, max_events) = .{},
     stage: GameStage = GameStage.splash,
+    wall_spawn_timer: f32 = 1,
 
     const max_entities = 256;
     const max_events = 256;
@@ -312,8 +317,6 @@ const Game = struct {
         self.entities[0] = Entity.createPlayer();
         self.entities[1] = Entity.createGround();
         _ = self.initWalls(2, 4, win_widthf * 2);
-        // self.entities[2] = Entity.createBottomWall(win_widthf * 1.5, 256);
-        // self.entities[3] = Entity.createTopWall(win_widthf * 1.5, 256);
     }
 
     pub fn tick(self: *Game) void {
@@ -326,23 +329,27 @@ const Game = struct {
             // log.debug("action: tap", .{});
             self.events.push_back(.{ .action = .tap }) catch unreachable;
         }
+        if (ev.isExit()) {
+            sapp.requestQuit();
+        }
     }
 
-    pub fn initWalls(self: *Game, idx: usize, count: usize, start_x: f32) usize {
-        assert(idx + count * 2 <= self.entities.len);
-        var x = start_x;
-        const app_config = main_app.config;
-        const win_widthf = ncast(f32, app_config.window_width());
-        const win_heightf = ncast(f32, app_config.window_height());
-        for (0..count) |i| {
-            var j = idx + i;
-            self.entities[j] = Entity.createBottomWall(x, (win_heightf / 2) - app_config.wall.hole_hsize);
-            j += 1;
-            self.entities[j] = Entity.createTopWall(x, (win_heightf / 2) - app_config.wall.hole_hsize);
-            x += app_config.wall.spacing_ratio * win_widthf;
-        }
+    pub fn createWallSet(self: *Game, x: f32, hole_y: f32) usize {
+        var i = self.findEntitySlot() orelse unreachable;
+        const h = main_app.config.wall.hole_hsize;
+        const wh = ncast(f32, main_app.config.window_height());
+        self.entities[i] = Entity.createBottomWall(x, hole_y - h);
+        i = self.findEntitySlot() orelse unreachable;
+        self.entities[i] = Entity.createTopWall(x, wh - hole_y - h);
+    }
 
-        return idx + count * 2;
+    pub fn findEntitySlot(self: *Game) ?usize {
+        for (0..self.entities.len) |i| {
+            if (self.entities[i] == null) {
+                return i;
+            }
+        }
+        return null;
     }
 };
 

@@ -27,6 +27,97 @@ var main_app: *App = undefined;
 
 var main_app_config = AppConfig{};
 
+pub fn main() void {
+    sapp.run(.{
+        .init_cb = sInit,
+        .frame_cb = sFrame,
+        .event_cb = sEvent,
+        .cleanup_cb = sCleanup,
+        .width = main_app_config.windowWidth(),
+        .height = main_app_config.windowHeight(),
+        .sample_count = 4,
+        .icon = .{ .sokol_default = true },
+        .window_title = "cube.zig",
+        .logger = .{ .func = slog.func },
+    });
+}
+
+const Error = error{} || mem.Allocator.Error;
+
+export fn sInit() void {
+    var gpa = heap.GeneralPurposeAllocator(.{}){};
+    var allocator = gpa.allocator();
+    main_app = allocator.create(App) catch |err| {
+        const trace = @errorReturnTrace().?.*;
+        debug.dumpStackTrace(trace);
+        debug.panic("initialization error: {any}", .{err});
+    };
+    main_app.* = .{};
+    main_app.init(allocator, main_app_config);
+}
+
+export fn sFrame() void {
+    main_app.frame();
+}
+
+export fn sEvent(sev: [*c]const sapp.Event) void {
+    const ev = InputEvent.from(sev[0]);
+    main_app.event(ev);
+}
+
+export fn sCleanup() void {
+    main_app.cleanup();
+}
+
+pub const App = struct {
+    /// general purpose allocator
+    gpa: mem.Allocator = undefined,
+    arena: mem.Allocator = undefined,
+
+    config: AppConfig = .{},
+
+    /// game state
+    game: Game = .{},
+
+    renderer: Renderer = .{},
+
+    /// window information
+    win: struct {
+        // 16:9
+        // width: i32 = 540,
+        // 16:10
+        width: i32 = 600,
+        height: i32 = 960,
+    } = .{},
+
+    pub fn init(self: *App, gpa: mem.Allocator, app_config: AppConfig) void {
+        self.gpa = gpa;
+        self.config = app_config;
+
+        // TODO: arena allocator
+
+        self.win.width = app_config.windowWidth();
+        self.win.height = app_config.windowHeight();
+
+        stime.setup();
+        self.game.init(app_config);
+        self.renderer.init();
+    }
+
+    pub fn frame(self: *App) void {
+        self.game.tick();
+        self.renderer.draw(self.game);
+    }
+
+    pub fn event(self: *App, ev: InputEvent) void {
+        self.game.handleInputEvent(ev);
+    }
+
+    pub fn cleanup(_: *App) void {
+        sgfx.shutdown();
+    }
+};
+
 const AppConfig = struct {
     tile_size: i32 = 8,
     aspect_width: i32 = 10,
@@ -53,16 +144,24 @@ const AppConfig = struct {
         color: Color = Color.gray1,
         // half-size of the hole in the pipes
         hole_hsize: f32 = 96,
-        // spacing as a fraction of screen width
-        spacing_ratio: f32 = 0.5,
+        spawn_interval: f64 = 1.5,
+        spawn_padding: f32 = 128,
     } = .{},
 
-    fn window_width(self: AppConfig) i32 {
+    fn windowWidth(self: AppConfig) i32 {
         return self.tile_size * self.aspect_width * self.aspect_factor;
     }
 
-    fn window_height(self: AppConfig) i32 {
+    fn windowWidthF(self: AppConfig) f32 {
+        return ncast(f32, self.windowWidth());
+    }
+
+    fn windowHeight(self: AppConfig) i32 {
         return self.tile_size * self.aspect_height * self.aspect_factor;
+    }
+
+    fn windowHeightF(self: AppConfig) f32 {
+        return ncast(f32, self.windowHeight());
     }
 };
 
@@ -201,110 +300,20 @@ fn RingBuf(T: type, size: usize) type {
     };
 }
 
-pub fn main() void {
-    sapp.run(.{
-        .init_cb = sInit,
-        .frame_cb = sFrame,
-        .event_cb = sEvent,
-        .cleanup_cb = sCleanup,
-        .width = main_app_config.window_width(),
-        .height = main_app_config.window_height(),
-        .sample_count = 4,
-        .icon = .{ .sokol_default = true },
-        .window_title = "cube.zig",
-        .logger = .{ .func = slog.func },
-    });
-}
-
-const Error = error{} || mem.Allocator.Error;
-
-export fn sInit() void {
-    var gpa = heap.GeneralPurposeAllocator(.{}){};
-    var allocator = gpa.allocator();
-    main_app = allocator.create(App) catch |err| {
-        const trace = @errorReturnTrace().?.*;
-        debug.dumpStackTrace(trace);
-        debug.panic("initialization error: {any}", .{err});
-    };
-    main_app.* = .{};
-    main_app.init(allocator, main_app_config);
-}
-
-export fn sFrame() void {
-    main_app.frame();
-}
-
-export fn sEvent(sev: [*c]const sapp.Event) void {
-    const ev = InputEvent.from(sev[0]);
-    main_app.event(ev);
-}
-
-export fn sCleanup() void {
-    main_app.cleanup();
-}
-
-pub const App = struct {
-    /// general purpose allocator
-    gpa: mem.Allocator = undefined,
-    arena: mem.Allocator = undefined,
-
-    config: AppConfig = .{},
-
-    /// game state
-    game: Game = .{},
-
-    renderer: Renderer = .{},
-
-    /// window information
-    win: struct {
-        // 16:9
-        // width: i32 = 540,
-        // 16:10
-        width: i32 = 600,
-        height: i32 = 960,
-    } = .{},
-
-    pub fn init(self: *App, gpa: mem.Allocator, app_config: AppConfig) void {
-        self.gpa = gpa;
-        self.config = app_config;
-
-        // TODO: arena allocator
-
-        self.win.width = app_config.window_width();
-        self.win.height = app_config.window_height();
-
-        stime.setup();
-        self.game.init(app_config);
-        self.renderer.init();
-    }
-
-    pub fn frame(self: *App) void {
-        self.game.tick();
-        self.renderer.draw(self.game);
-    }
-
-    pub fn event(self: *App, ev: InputEvent) void {
-        self.game.handleInputEvent(ev);
-    }
-
-    pub fn cleanup(_: *App) void {
-        sgfx.shutdown();
-    }
-};
-
 const Game = struct {
     camera: Camera = undefined,
     entities: [max_entities]?Entity = .{null} ** max_entities,
     events: RingBuf(Event, max_events) = .{},
     stage: GameStage = GameStage.splash,
-    wall_spawn_timer: f32 = 1,
+    wall_spawn_timer: f64 = 0,
+    score: u32 = 0,
 
     const max_entities = 256;
     const max_events = 256;
 
-    pub fn init(self: *Game, app_config: AppConfig) void {
-        const win_width = app_config.window_width();
-        const win_height = app_config.window_height();
+    fn init(self: *Game, app_config: AppConfig) void {
+        const win_width = app_config.windowWidth();
+        const win_height = app_config.windowHeight();
         const win_widthf = ncast(f32, win_width);
         const win_heightf = ncast(f32, win_height);
 
@@ -313,18 +322,21 @@ const Game = struct {
         self.camera.position = za.Vec2.new(0, 0);
         self.camera.size = za.Vec2.new(win_widthf, win_heightf);
 
+        // set up wall spawn timer
+        self.wall_spawn_timer = app_config.wall.spawn_interval;
+
         // create some test entities at the center of the screen
         self.entities[0] = Entity.createPlayer();
         self.entities[1] = Entity.createGround();
-        _ = self.initWalls(2, 4, win_widthf * 2);
+        self.entities[2] = Entity.createSplashText();
     }
 
-    pub fn tick(self: *Game) void {
+    fn tick(self: *Game) void {
         const dt = sapp.frameDuration();
         self.stage.vtable.tick(self, dt);
     }
 
-    pub fn handleInputEvent(self: *Game, ev: InputEvent) void {
+    fn handleInputEvent(self: *Game, ev: InputEvent) void {
         if (ev.isTap()) {
             // log.debug("action: tap", .{});
             self.events.push_back(.{ .action = .tap }) catch unreachable;
@@ -334,22 +346,61 @@ const Game = struct {
         }
     }
 
-    pub fn createWallSet(self: *Game, x: f32, hole_y: f32) usize {
+    fn createWallSet(self: *Game, x: f32, hole_y: f32) void {
         var i = self.findEntitySlot() orelse unreachable;
         const h = main_app.config.wall.hole_hsize;
-        const wh = ncast(f32, main_app.config.window_height());
+        const wh = ncast(f32, main_app.config.windowHeight());
         self.entities[i] = Entity.createBottomWall(x, hole_y - h);
         i = self.findEntitySlot() orelse unreachable;
         self.entities[i] = Entity.createTopWall(x, wh - hole_y - h);
     }
 
-    pub fn findEntitySlot(self: *Game) ?usize {
+    fn findEntitySlot(self: *Game) ?usize {
         for (0..self.entities.len) |i| {
             if (self.entities[i] == null) {
                 return i;
             }
         }
         return null;
+    }
+
+    fn freeStaleWalls(self: *Game) void {
+        for (0..self.entities.len) |i| {
+            if (self.entities[i] == null) continue;
+            const entity = self.entities[i].?;
+            if (!self.entities[i].?.wall) continue;
+            const r_edge = entity.position.x() + entity.size.x();
+            if (r_edge < 0) self.entities[0] = null;
+        }
+    }
+
+    fn countWallsBehindPlayers(self: *Game) u32 {
+        var count: u32 = 0;
+        for (0..self.entities.len) |i| {
+            if (self.entities[i] == null) continue;
+            if (!self.entities[i].?.player) continue;
+            const ix = self.entities[i].?.position.x();
+            for (0..self.entities.len) |j| {
+                if (self.entities[j] == null) continue;
+                if (!self.entities[j].?.wall) continue;
+                const jx = self.entities[j].?.position.x();
+                if (ix > jx) {
+                    count += 1;
+                }
+            }
+        }
+        return count;
+    }
+
+    fn updateScoreText(self: *Game) void {
+        for (0..self.entities.len) |i| {
+            const entity_opt: *?Entity = &(self.entities[i]);
+            if (self.entities[i] == null) continue;
+            const entity: *Entity = &(entity_opt.?);
+            if (!entity.score_text) continue;
+            assert(entity.debug_text != null);
+            // entity.debug_text.?.text
+        }
     }
 };
 
@@ -381,6 +432,14 @@ const GameStage = struct {
                     game.stage = playing;
                     // push event back onto the queue so that player jumps
                     game.events.push_front(ev) catch unreachable;
+                    // hide splash-only elements
+                    // show playing-only elements
+                    for (0..game.entities.len) |i| {
+                        if (game.entities[i] == null) continue;
+                        var entity: *Entity = &(game.entities[i].?);
+                        if (entity.splash_only) entity.visible = false;
+                        if (entity.playing_only) entity.visible = true;
+                    }
                     return;
                 }
             }
@@ -397,13 +456,53 @@ const GameStage = struct {
                 }
             }
 
+            const walls_passed_before = game.countWallsBehindPlayers();
+
+            // tick entities
             for (0..game.entities.len) |i| {
                 if (game.entities[i] == null) continue;
                 var entity: *Entity = &(game.entities[i].?);
+                // jump player
+                if (jump and entity.player) entity.jump();
+                // move entities
                 entity.applyKinematics(dt);
-                if (jump and entity.player) {
-                    entity.jump();
+            }
+
+            const walls_passed_after = game.countWallsBehindPlayers();
+            assert(walls_passed_before <= walls_passed_after);
+            const score_delta = @divTrunc(walls_passed_after - walls_passed_before, 2);
+            if (score_delta > 0) {
+                game.score += score_delta;
+                log.debug("score: {d}", .{game.score});
+            }
+
+            for (0..game.entities.len) |i| {
+                if (game.entities[i] == null) continue;
+                var entity: *Entity = &(game.entities[i].?);
+                // clear stale walls
+                if (entity.wall and entity.rightEdge() < 0) {
+                    game.entities[i] = null;
+                    continue; // entity now invalid
                 }
+            }
+
+            // wall timer
+            game.wall_spawn_timer -= dt;
+            if (game.wall_spawn_timer < 0) {
+                game.wall_spawn_timer += main_app.config.wall.spawn_interval;
+                const x = ncast(f32, main_app.config.windowWidth());
+                // TODO: random height
+                const ymin = main_app.config.wall.spawn_padding + main_app.config.wall.hole_hsize;
+                const ymax = ncast(f32, main_app.config.windowHeight()) - ymin;
+                assert(ymax > ymin);
+                var prng = std.Random.DefaultPrng.init(blk: {
+                    var seed: u64 = undefined;
+                    std.posix.getrandom(std.mem.asBytes(&seed)) catch unreachable;
+                    break :blk seed;
+                });
+                const rand = prng.random();
+                const y = ymin + rand.float(f32) * (ymax - ymin);
+                game.createWallSet(x, y);
             }
         }
     };
@@ -439,15 +538,23 @@ const Entity = struct {
     color_quad: ?ColorQuad = null,
     debug_text: ?DebugText = null,
 
+    visible: bool = true,
+
     player: bool = false,
+    wall: bool = false,
+    score_text: bool = false,
+
+    splash_only: bool = false,
+    playing_only: bool = false,
+
     pub fn createPlayer() Entity {
         const app_config = main_app.config;
         const size = app_config.player.size;
         const hsize = app_config.player.size / 2;
         const x = app_config.player.x0;
         const y = app_config.player.y0;
-        const w = ncast(f32, app_config.window_width());
-        const h = ncast(f32, app_config.window_height());
+        const w = ncast(f32, app_config.windowWidth());
+        const h = ncast(f32, app_config.windowHeight());
 
         return Entity{
             .position = za.Vec2.new(w * x - hsize, h * y - hsize),
@@ -467,7 +574,7 @@ const Entity = struct {
     /// create the ground obstacle
     pub fn createGround() Entity {
         const app_config = main_app.config;
-        const w = ncast(f32, app_config.window_width());
+        const w = ncast(f32, app_config.windowWidth());
         const h = app_config.ground.height;
 
         const x = 0;
@@ -494,13 +601,14 @@ const Entity = struct {
             .color_quad = .{
                 .color = app_config.wall.color,
             },
+            .wall = true,
         };
     }
 
     /// create a wall obstacle offscreen to the right, attached to the top of the screen
     pub fn createTopWall(x: f32, height: f32) Entity {
         const app_config = main_app.config;
-        const y = ncast(f32, app_config.window_height()) - height;
+        const y = ncast(f32, app_config.windowHeight()) - height;
         return Entity{
             .position = za.Vec2.new(x, y),
             .size = za.Vec2.new(app_config.wall.width, height),
@@ -509,6 +617,20 @@ const Entity = struct {
             .color_quad = .{
                 .color = app_config.wall.color,
             },
+            .wall = true,
+        };
+    }
+
+    pub fn createSplashText() Entity {
+        const cfg = main_app.config;
+        const cx = cfg.windowWidthF() / 2 - 64;
+        const cy = cfg.windowHeightF() / 2;
+        return Entity{
+            .position = za.Vec2.new(cx, cy),
+            .debug_text = .{
+                .text = "tap to start",
+            },
+            .splash_only = true,
         };
     }
 
@@ -522,7 +644,6 @@ const Entity = struct {
     }
 
     pub fn modelTransform(self: Entity) za.Mat4 {
-        assert(self.color_quad != null);
         var model_xform = za.Mat4.identity();
         model_xform = model_xform.scale(za.Vec3.new(
             self.size.x(),
@@ -538,7 +659,6 @@ const Entity = struct {
     }
 
     pub fn debugTextTransform(self: Entity) za.Mat4 {
-        assert(self.color_quad != null);
         var model_xform = za.Mat4.identity();
         model_xform = model_xform.translate(za.Vec3.new(
             self.position.x(),
@@ -551,6 +671,10 @@ const Entity = struct {
     pub fn jump(self: *Entity) void {
         self.velocity.yMut().* = main_app_config.player.jump_vel;
     }
+
+    fn rightEdge(self: Entity) f32 {
+        return self.position.x() + self.size.x();
+    }
 };
 
 /// a component for entities that correspond to a drawable quad
@@ -561,7 +685,6 @@ const ColorQuad = struct {
 const DebugText = struct {
     text: []const u8,
     font_idx: u8 = 0,
-    grid_pos: za.Vec2 = za.Vec2.zero(),
     // alpha is ignored
     color: Color = Color.new(1, 1, 1, 1),
     offset: za.Vec2 = za.Vec2.zero(),
@@ -597,8 +720,13 @@ const Renderer = struct {
         // draw quads
         for (game.entities) |entity_opt| {
             const entity = entity_opt orelse continue;
-            self.color_quad_pipe.draw_quad(entity, game.camera);
-            self.debug_text_pipe.print(entity, game.camera);
+            if (!entity.visible) continue;
+            if (entity.color_quad != null) {
+                self.color_quad_pipe.draw_quad(entity, game.camera);
+            }
+            if (entity.debug_text != null) {
+                self.debug_text_pipe.print(entity, game.camera);
+            }
         }
 
         // draw debug text
@@ -662,6 +790,7 @@ const ColorQuadPipeline = struct {
         entity: Entity,
         camera: Camera,
     ) void {
+        assert(entity.color_quad != null);
         // prepare uniforms
         const vs_params = shd_solid.VsParams{
             .model = entity.modelTransform(),
@@ -730,6 +859,7 @@ const DebugTextPipeline = struct {
     }
 
     pub fn print(self: DebugTextPipeline, entity: Entity, camera: Camera) void {
+        assert(entity.debug_text != null);
         const dtext = entity.debug_text orelse return;
         sdtx.font(dtext.font_idx);
         sdtx.color3f(

@@ -178,6 +178,7 @@ const Game = struct {
     stage: GameStage = GameStage.splash,
     wall_spawn_timer: f64 = 0,
     score: u32 = 0,
+    score_text_buf: [16]u8 = undefined,
 
     const max_entities = 256;
     const max_events = 256;
@@ -200,6 +201,13 @@ const Game = struct {
         self.entities[0] = Entity.createPlayer();
         self.entities[1] = Entity.createGround();
         self.entities[2] = Entity.createSplashText();
+        self.entities[3] = Entity.createGameOverText();
+        self.entities[4] = Entity.createScoreText();
+    }
+
+    fn restart(self: *Game) void {
+        self.* = .{};
+        self.init(main_app_config);
     }
 
     fn tick(self: *Game) void {
@@ -211,6 +219,9 @@ const Game = struct {
         if (ev.isTap()) {
             // log.debug("action: tap", .{});
             self.events.push_back(.{ .action = .tap }) catch unreachable;
+        }
+        if (ev.isRestart()) {
+            self.events.push_back(.{ .action = .restart }) catch unreachable;
         }
         if (ev.isExit()) {
             sapp.requestQuit();
@@ -280,20 +291,20 @@ const GameStage = struct {
     vtable: VTable,
 
     const splash: GameStage = .{
-        .vtable = .{
-            .tick = Splash.tick,
-        },
+        .vtable = .{ .tick = Splash.tick },
     };
 
     const playing: GameStage = .{
-        .vtable = .{
-            .tick = Playing.tick,
-        },
+        .vtable = .{ .tick = Playing.tick },
     };
 
-    const noop: GameStage = .{ .vtable = .{
-        .tick = NoOp.tick,
-    } };
+    const game_over: GameStage = .{
+        .vtable = .{ .tick = GameOver.tick },
+    };
+
+    const noop: GameStage = .{
+        .vtable = .{ .tick = NoOp.tick },
+    };
 
     const VTable = struct {
         tick: *const fn (game: *Game, dt: f64) void,
@@ -312,8 +323,9 @@ const GameStage = struct {
                     for (0..game.entities.len) |i| {
                         if (game.entities[i] == null) continue;
                         var entity: *Entity = &(game.entities[i].?);
-                        if (entity.splash_only) entity.visible = false;
                         if (entity.playing_only) entity.visible = true;
+                        if (entity.splash_only) entity.visible = false;
+                        if (entity.game_over_only) entity.visible = false;
                     }
                     return;
                 }
@@ -366,7 +378,6 @@ const GameStage = struct {
             if (game.wall_spawn_timer < 0) {
                 game.wall_spawn_timer += main_app.config.wall.spawn_interval;
                 const x = ncast(f32, main_app.config.windowWidth());
-                // TODO: random height
                 const ymin = main_app.config.wall.spawn_padding + main_app.config.wall.hole_hsize;
                 const ymax = ncast(f32, main_app.config.windowHeight()) - ymin;
                 assert(ymax > ymin);
@@ -390,9 +401,43 @@ const GameStage = struct {
                     const entity: *Entity = &(game.entities[j].?);
                     if (!entity.trigger_game_over) continue;
                     if (player.checkOverlap(entity.*)) {
-                        game.stage = noop;
+                        GameOver.enter(game_over, game);
                         return;
                     }
+                }
+            }
+
+            // update score
+            const score_text: []u8 = std.fmt.bufPrint(&game.score_text_buf, "{d}", .{game.score}) catch unreachable;
+            // total hack - don't care
+            const score_text_const: []const u8 = @constCast(score_text);
+            for (0..game.entities.len) |i| {
+                if (game.entities[i] == null) continue;
+                const entity: *Entity = &(game.entities[i].?);
+                if (entity.score_text) {
+                    assert(entity.debug_text != null);
+                    entity.debug_text.?.text = score_text_const;
+                }
+            }
+        }
+    };
+
+    const GameOver = struct {
+        fn enter(self: GameStage, game: *Game) void {
+            for (0..game.entities.len) |i| {
+                if (game.entities[i] == null) continue;
+                const entity: *Entity = &(game.entities[i].?);
+                if (entity.splash_only) entity.visible = false;
+                if (entity.playing_only) entity.visible = false;
+                if (entity.game_over_only) entity.visible = true;
+            }
+            game.stage = self;
+        }
+        fn tick(game: *Game, _: f64) void {
+            while (game.events.pop_front()) |ev| {
+                if (ev == .action and ev.action == .restart) {
+                    game.restart();
+                    return;
                 }
             }
         }
@@ -474,6 +519,7 @@ const Event = union(enum) {
 const InputAction = enum {
     anykey,
     tap,
+    restart,
 };
 
 const InputEvent = struct {
@@ -492,6 +538,10 @@ const InputEvent = struct {
     fn isTap(self: InputEvent) bool {
         // TODO: touch event
         return self.sevent.type == .KEY_DOWN and self.sevent.key_code == .SPACE;
+    }
+
+    fn isRestart(self: InputEvent) bool {
+        return self.sevent.type == .KEY_DOWN and self.sevent.key_code == .R;
     }
 
     fn isExit(self: InputEvent) bool {
@@ -598,6 +648,7 @@ const Entity = struct {
 
     splash_only: bool = false,
     playing_only: bool = false,
+    game_over_only: bool = false,
 
     pub fn createPlayer() Entity {
         const app_config = main_app.config;
@@ -616,9 +667,9 @@ const Entity = struct {
             .color_quad = .{
                 .color = app_config.player.color,
             },
-            .debug_text = .{
-                .text = "birb",
-            },
+            // .debug_text = .{
+            //     .text = "birb",
+            // },
             .player = true,
         };
     }
@@ -678,7 +729,7 @@ const Entity = struct {
 
     pub fn createSplashText() Entity {
         const cfg = main_app.config;
-        const cx = cfg.windowWidthF() / 2 - 64;
+        const cx = cfg.windowWidthF() / 2 - 96;
         const cy = cfg.windowHeightF() / 2;
         return Entity{
             .position = za.Vec2.new(cx, cy),
@@ -686,6 +737,34 @@ const Entity = struct {
                 .text = "tap to start",
             },
             .splash_only = true,
+        };
+    }
+    pub fn createGameOverText() Entity {
+        const cfg = main_app.config;
+        const cx = cfg.windowWidthF() / 2 - 192;
+        const cy = cfg.windowHeightF() / 2;
+        return Entity{
+            .position = za.Vec2.new(cx, cy),
+            .debug_text = .{
+                .text = "game over (R to restart)",
+            },
+            .game_over_only = true,
+            .visible = false,
+        };
+    }
+
+    pub fn createScoreText() Entity {
+        const cfg = main_app.config;
+        const cx = cfg.windowWidthF() / 2 - 4;
+        const cy = cfg.windowHeightF() * 7 / 8;
+        return Entity{
+            .position = za.Vec2.new(cx, cy),
+            .debug_text = .{
+                .text = "  0",
+            },
+            .playing_only = true,
+            .visible = false,
+            .score_text = true,
         };
     }
 

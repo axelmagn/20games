@@ -93,6 +93,17 @@ const AppConfig = struct {
             b.fmt("Run {s}", .{self.name}),
         );
         run_step.dependOn(&run.step);
+
+        const mod_test = b.addTest(.{
+            .root_module = mod,
+        });
+        const run_test = b.addRunArtifact(mod_test);
+        const test_step = b.step(
+            b.fmt("test-{s}", .{self.name}),
+            b.fmt("Test {s}", .{self.name}),
+        );
+        test_step.dependOn(&run_test.step);
+
         return run_step;
     }
 
@@ -118,6 +129,7 @@ const AppConfig = struct {
             .use_webgl2 = true,
             .use_emmalloc = true,
             .use_filesystem = false,
+            .use_offset_converter = true,
             .shell_file_path = dep_sokol.path("src/sokol/web/shell.html"),
         });
         for (shdc_steps) |shd| {

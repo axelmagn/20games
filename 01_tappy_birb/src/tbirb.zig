@@ -4,6 +4,7 @@
 //  A small demake of Flappy Bird
 //------------------------------------------------------------------------------
 const std = @import("std");
+const builtin = @import("builtin");
 const mem = std.mem;
 const math = std.math;
 const debug = std.debug;
@@ -45,8 +46,13 @@ pub fn main() void {
 const Error = error{} || mem.Allocator.Error;
 
 export fn sInit() void {
-    var gpa = heap.GeneralPurposeAllocator(.{}){};
-    var allocator = gpa.allocator();
+    var allocator = switch (builtin.target.cpu.arch) {
+        .wasm32, .wasm64 => heap.c_allocator,
+        else => blk: {
+            var gpa = heap.GeneralPurposeAllocator(.{}){};
+            break :blk gpa.allocator();
+        },
+    };
     main_app = allocator.create(App) catch |err| {
         const trace = @errorReturnTrace().?.*;
         debug.dumpStackTrace(trace);
@@ -164,141 +170,6 @@ const AppConfig = struct {
         return ncast(f32, self.windowHeight());
     }
 };
-
-const Color = struct {
-    r: f32 = 0,
-    g: f32 = 0,
-    b: f32 = 0,
-    a: f32 = 1,
-
-    fn new(r: f32, g: f32, b: f32, a: f32) Color {
-        return Color{
-            .r = r,
-            .g = g,
-            .b = b,
-            .a = a,
-        };
-    }
-
-    fn to(self: *const Color, T: type) T {
-        return switch (T) {
-            sgfx.Color => sgfx.Color{
-                .r = self.r,
-                .g = self.g,
-                .b = self.b,
-                .a = self.a,
-            },
-            za.Vec4 => za.Vec4.new(self.r, self.g, self.b, self.a),
-            else => @compileError("unexpected color type: " ++ @typeName(T)),
-        };
-    }
-
-    const white = Color.new(1.0, 1.0, 1.0, 1.0);
-    const black = Color.new(0.0, 0.0, 0.0, 1.0);
-
-    const gray0 = Color.new(0.2, 0.2, 0.2, 1.0);
-    const gray1 = Color.new(0.4, 0.4, 0.4, 1.0);
-    const gray2 = Color.new(0.6, 0.6, 0.6, 1.0);
-    const gray3 = Color.new(0.8, 0.8, 0.8, 1.0);
-};
-
-const Event = union(enum) {
-    /// player action
-    action: InputAction,
-    // todo: collision
-};
-
-const InputAction = enum {
-    anykey,
-    tap,
-};
-
-const InputEvent = struct {
-    sevent: sapp.Event,
-
-    fn from(ev: sapp.Event) InputEvent {
-        return .{
-            .sevent = ev,
-        };
-    }
-
-    fn isAnyKey(self: InputEvent) bool {
-        return self.sevent.type == .KEY_DOWN or self.sevent.type == .TOUCHES_BEGAN;
-    }
-
-    fn isTap(self: InputEvent) bool {
-        // TODO: touch event
-        return self.sevent.type == .KEY_DOWN and self.sevent.key_code == .SPACE;
-    }
-
-    fn isExit(self: InputEvent) bool {
-        return self.sevent.type == .KEY_DOWN and self.sevent.key_code == .ESCAPE;
-    }
-};
-
-fn RingBuf(T: type, size: usize) type {
-    if (size == 0) {
-        @compileError("size must be greater than zero");
-    }
-
-    return struct {
-        buf: [size]T = undefined,
-        start: usize = 0,
-        count: usize = 0,
-
-        fn push_back(self: *@This(), value: T) !void {
-            if (self.count == self.buf.len) {
-                return error.capacity_exceeded;
-            }
-            assert(self.count < self.buf.len);
-            const i = @rem(self.start + self.count, self.buf.len);
-            assert(i < self.buf.len);
-            self.buf[i] = value;
-            self.count += 1;
-        }
-
-        fn pop_back(self: *@This()) ?T {
-            if (self.count == 0) return null;
-            const i = @rem(self.start + self.count - 1, self.buf.len);
-            defer self.count -= 1;
-            return self.buf[i];
-        }
-
-        fn peek_back(self: @This()) ?T {
-            if (self.count == 0) return null;
-            const i = @rem(self.start + self.count - 1, self.buf.len);
-            return self.buf[i];
-        }
-
-        fn push_front(self: *@This(), value: T) !void {
-            if (self.count == self.buf.len) {
-                return error.capacity_exceeded;
-            }
-            assert(self.count < self.buf.len);
-            const i = @rem(self.buf.len + self.start - 1, self.buf.len);
-            assert(i < self.buf.len);
-            self.buf[i] = value;
-            self.start = i;
-            self.count += 1;
-        }
-
-        fn pop_front(self: *@This()) ?T {
-            if (self.count == 0) return null;
-            defer self.start = @rem(self.start + 1, self.buf.len);
-            defer self.count -= 1;
-            return self.buf[self.start];
-        }
-
-        fn peek_front(self: *@This()) ?T {
-            if (self.count == 0) return null;
-            return self.buf[self.start];
-        }
-
-        fn clear(self: *@This()) void {
-            self.count = 0;
-        }
-    };
-}
 
 const Game = struct {
     camera: Camera = undefined,
@@ -420,6 +291,10 @@ const GameStage = struct {
         },
     };
 
+    const noop: GameStage = .{ .vtable = .{
+        .tick = NoOp.tick,
+    } };
+
     const VTable = struct {
         tick: *const fn (game: *Game, dt: f64) void,
     };
@@ -504,6 +379,22 @@ const GameStage = struct {
                 const y = ymin + rand.float(f32) * (ymax - ymin);
                 game.createWallSet(x, y);
             }
+
+            // check player collisions
+            for (0..game.entities.len) |i| {
+                if (game.entities[i] == null) continue;
+                const player: *Entity = &(game.entities[i].?);
+                if (!player.player) continue;
+                for (0..game.entities.len) |j| {
+                    if (game.entities[j] == null) continue;
+                    const entity: *Entity = &(game.entities[j].?);
+                    if (!entity.trigger_game_over) continue;
+                    if (player.checkOverlap(entity.*)) {
+                        game.stage = noop;
+                        return;
+                    }
+                }
+            }
         }
     };
 
@@ -511,6 +402,166 @@ const GameStage = struct {
         fn tick(_: *Game, _: f64) void {}
     };
 };
+
+const Color = struct {
+    r: f32 = 0,
+    g: f32 = 0,
+    b: f32 = 0,
+    a: f32 = 1,
+
+    fn new(r: f32, g: f32, b: f32, a: f32) Color {
+        return Color{
+            .r = r,
+            .g = g,
+            .b = b,
+            .a = a,
+        };
+    }
+
+    fn to(self: *const Color, T: type) T {
+        return switch (T) {
+            sgfx.Color => sgfx.Color{
+                .r = self.r,
+                .g = self.g,
+                .b = self.b,
+                .a = self.a,
+            },
+            za.Vec4 => za.Vec4.new(self.r, self.g, self.b, self.a),
+            else => @compileError("unexpected color type: " ++ @typeName(T)),
+        };
+    }
+
+    const white = Color.new(1.0, 1.0, 1.0, 1.0);
+    const black = Color.new(0.0, 0.0, 0.0, 1.0);
+
+    const gray0 = Color.new(0.2, 0.2, 0.2, 1.0);
+    const gray1 = Color.new(0.4, 0.4, 0.4, 1.0);
+    const gray2 = Color.new(0.6, 0.6, 0.6, 1.0);
+    const gray3 = Color.new(0.8, 0.8, 0.8, 1.0);
+};
+
+const Rect = struct {
+    pos: za.Vec2,
+    size: za.Vec2,
+
+    fn top(self: Rect) f32 {
+        return self.pos.y() + self.size.y();
+    }
+
+    fn bottom(self: Rect) f32 {
+        return self.pos.y();
+    }
+
+    fn left(self: Rect) f32 {
+        return self.pos.x();
+    }
+
+    fn right(self: Rect) f32 {
+        return self.pos.x() + self.size.x();
+    }
+
+    fn checkOverlap(self: Rect, other: Rect) bool {
+        return self.left() <= other.right() and self.right() >= other.left() and self.top() >= other.bottom() and self.bottom() <= other.top();
+    }
+};
+
+const Event = union(enum) {
+    /// player action
+    action: InputAction,
+    // todo: collision
+};
+
+const InputAction = enum {
+    anykey,
+    tap,
+};
+
+const InputEvent = struct {
+    sevent: sapp.Event,
+
+    fn from(ev: sapp.Event) InputEvent {
+        return .{
+            .sevent = ev,
+        };
+    }
+
+    fn isAnyKey(self: InputEvent) bool {
+        return self.sevent.type == .KEY_DOWN or self.sevent.type == .TOUCHES_BEGAN;
+    }
+
+    fn isTap(self: InputEvent) bool {
+        // TODO: touch event
+        return self.sevent.type == .KEY_DOWN and self.sevent.key_code == .SPACE;
+    }
+
+    fn isExit(self: InputEvent) bool {
+        return self.sevent.type == .KEY_DOWN and self.sevent.key_code == .ESCAPE;
+    }
+};
+
+fn RingBuf(T: type, size: usize) type {
+    if (size == 0) {
+        @compileError("size must be greater than zero");
+    }
+
+    return struct {
+        buf: [size]T = undefined,
+        start: usize = 0,
+        count: usize = 0,
+
+        fn push_back(self: *@This(), value: T) !void {
+            if (self.count == self.buf.len) {
+                return error.capacity_exceeded;
+            }
+            assert(self.count < self.buf.len);
+            const i = @rem(self.start + self.count, self.buf.len);
+            assert(i < self.buf.len);
+            self.buf[i] = value;
+            self.count += 1;
+        }
+
+        fn pop_back(self: *@This()) ?T {
+            if (self.count == 0) return null;
+            const i = @rem(self.start + self.count - 1, self.buf.len);
+            defer self.count -= 1;
+            return self.buf[i];
+        }
+
+        fn peek_back(self: @This()) ?T {
+            if (self.count == 0) return null;
+            const i = @rem(self.start + self.count - 1, self.buf.len);
+            return self.buf[i];
+        }
+
+        fn push_front(self: *@This(), value: T) !void {
+            if (self.count == self.buf.len) {
+                return error.capacity_exceeded;
+            }
+            assert(self.count < self.buf.len);
+            const i = @rem(self.buf.len + self.start - 1, self.buf.len);
+            assert(i < self.buf.len);
+            self.buf[i] = value;
+            self.start = i;
+            self.count += 1;
+        }
+
+        fn pop_front(self: *@This()) ?T {
+            if (self.count == 0) return null;
+            defer self.start = @rem(self.start + 1, self.buf.len);
+            defer self.count -= 1;
+            return self.buf[self.start];
+        }
+
+        fn peek_front(self: *@This()) ?T {
+            if (self.count == 0) return null;
+            return self.buf[self.start];
+        }
+
+        fn clear(self: *@This()) void {
+            self.count = 0;
+        }
+    };
+}
 
 const Camera = struct {
     position: za.Vec2 = za.Vec2.zero(),
@@ -543,6 +594,7 @@ const Entity = struct {
     player: bool = false,
     wall: bool = false,
     score_text: bool = false,
+    trigger_game_over: bool = false,
 
     splash_only: bool = false,
     playing_only: bool = false,
@@ -584,6 +636,7 @@ const Entity = struct {
             .position = za.Vec2.new(x, y),
             .size = za.Vec2.new(w, h),
             .z_layer = 20,
+            .trigger_game_over = true,
             .color_quad = .{
                 .color = app_config.ground.color,
             },
@@ -602,6 +655,7 @@ const Entity = struct {
                 .color = app_config.wall.color,
             },
             .wall = true,
+            .trigger_game_over = true,
         };
     }
 
@@ -618,6 +672,7 @@ const Entity = struct {
                 .color = app_config.wall.color,
             },
             .wall = true,
+            .trigger_game_over = true,
         };
     }
 
@@ -674,6 +729,17 @@ const Entity = struct {
 
     fn rightEdge(self: Entity) f32 {
         return self.position.x() + self.size.x();
+    }
+
+    fn rect(self: Entity) Rect {
+        return Rect{
+            .pos = self.position,
+            .size = self.size,
+        };
+    }
+
+    fn checkOverlap(self: Entity, other: Entity) bool {
+        return self.rect().checkOverlap(other.rect());
     }
 };
 
@@ -909,4 +975,24 @@ pub fn ncast(T: type, x: anytype) T {
         return @floatFromInt(x);
     }
     @compileError("unhandled numeric type conversion");
+}
+
+test "checkOverlap" {
+    const t = std.testing;
+    const r0 = Rect{
+        .pos = za.Vec2.new(0, 0),
+        .size = za.Vec2.new(2, 2),
+    };
+    const r1 = Rect{
+        .pos = za.Vec2.new(1, 1),
+        .size = za.Vec2.new(2, 2),
+    };
+    const r2 = Rect{
+        .pos = za.Vec2.new(3, 3),
+        .size = za.Vec2.new(2, 2),
+    };
+
+    try t.expect(r0.checkOverlap(r1));
+    try t.expect(r1.checkOverlap(r2));
+    try t.expect(!r0.checkOverlap(r2));
 }

@@ -21,6 +21,7 @@ const sdtx = sokol.debugtext;
 const za = @import("zalgebra");
 const lm32 = @import("zlm").as(f32);
 const shd_solid = @import("shaders/solid.glsl.zig");
+const shd_tbirb = @import("shaders/tbirb.glsl.zig");
 const fons = @import("fontstash.zig");
 
 /// root global for app state
@@ -78,7 +79,7 @@ export fn sCleanup() void {
 pub const App = struct {
     /// general purpose allocator
     gpa: mem.Allocator = undefined,
-    arena: mem.Allocator = undefined,
+    // arena: mem.Allocator = undefined,
 
     config: AppConfig = .{},
 
@@ -840,11 +841,63 @@ const Renderer = struct {
     debug_text_pipe: DebugTextPipeline = .{},
     clear_color: Color = Color.gray0,
 
+    offscreen: struct {
+        pass: sgfx.Pass = undefined,
+    } = .{},
+
+    display: struct {
+        pass: sgfx.Pass = undefined,
+    } = .{},
+
     fn init(self: *Renderer) void {
         sgfx.setup(.{
             .environment = sglue.environment(),
             .logger = .{ .func = slog.func },
         });
+
+        var pass_action: sgfx.PassAction = .{};
+        pass_action.colors[0] = .{
+            .load_action = .CLEAR,
+            .clear_value = self.clear_color.to(sgfx.Color),
+        };
+
+        var img_desc: sgfx.ImageDesc = .{
+            .usage = .{
+                .color_attachment = true,
+            },
+            .width = main_app.win.width,
+            .height = main_app.win.height,
+            .pixel_format = .RGBA8,
+            .sample_count = 1,
+            .label = "color-image",
+        };
+        const color_img = sgfx.makeImage(img_desc);
+        img_desc.pixel_format = .DEPTH;
+        img_desc.usage = .{ .depth_stencil_attachment = true };
+        img_desc.label = "depth-image";
+        const depth_img = sgfx.makeImage(img_desc);
+
+        self.offscreen.pass = .{
+            .action = pass_action,
+            .label = "offscreen-pass",
+        };
+        self.offscreen.pass.attachments.colors[0] = sgfx.makeView(.{
+            .color_attachment = .{ .image = color_img },
+            .label = "color-attachment",
+        });
+        self.offscreen.pass.attachments.depth_stencil = sgfx.makeView(.{
+            .depth_stencil_attachment = .{ .image = depth_img },
+            .label = "depth-attachment",
+        });
+
+        pass_action.colors[0] = .{
+            .load_action = .CLEAR,
+            .clear_value = Color.black.to(sgfx.Color),
+        };
+        self.display.pass = .{
+            .action = pass_action,
+            .swapchain = sglue.swapchain(),
+        };
 
         self.color_quad_pipe.init();
         DebugTextPipeline.init();
@@ -854,13 +907,8 @@ const Renderer = struct {
         // DebugTextPipeline.hello_world();
         self.debug_text_pipe.resetCanvas();
 
-        // begin pass
-        var pass_action: sgfx.PassAction = .{};
-        pass_action.colors[0] = .{
-            .load_action = .CLEAR,
-            .clear_value = self.clear_color.to(sgfx.Color),
-        };
-        sgfx.beginPass(.{ .action = pass_action, .swapchain = sglue.swapchain() });
+        // begin offscreen pass
+        sgfx.beginPass(self.offscreen.pass);
 
         // draw quads
         for (game.entities) |entity_opt| {
@@ -926,6 +974,7 @@ const ColorQuadPipeline = struct {
                 .compare = .LESS_EQUAL,
                 .write_enabled = true,
             },
+
             .cull_mode = .NONE,
         });
     }
@@ -1033,6 +1082,39 @@ const DebugTextPipeline = struct {
             pos.y(),
         );
         sdtx.print("{s}", .{dtext.text});
+    }
+};
+
+const DisplayPipeline = struct {
+    pipe: sgfx.Pipeline = .{},
+    bind: sgfx.Bindings = .{},
+
+    const VB_quad = 0;
+
+    const quad_verts = [_]f32{
+        0, 0,
+        0, 1,
+        1, 1,
+        1, 0,
+    };
+    const quad_idxs = [_]u16{
+        0, 1, 2,
+        2, 3, 0,
+    };
+
+    fn init(self: *DisplayPipeline) void {
+        self.bind.vertex_buffers[0] = sgfx.makeBuffer(.{
+            .usage = .{ .vertex_buffer = true, .immutable = true },
+            .data = sgfx.asRange(&quad_verts),
+        });
+        self.bind.index_buffer = sgfx.makeBuffer(.{
+            .usage = .{ .index_buffer = true, .immutable = true },
+            .data = sgfx.asRange(&quad_idxs),
+        });
+
+        const backend = sgfx.queryBackend();
+        const shader = sgfx.makeShader(shd_tbirb.displayShaderDesc(backend));
+        _ = shader;
     }
 };
 

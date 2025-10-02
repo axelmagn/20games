@@ -19,6 +19,7 @@ pub fn build(b: *Build) !void {
         .root_src = b.path("src/tbirb.zig"),
         .shader_srcs = &.{
             "src/shaders/solid.glsl",
+            "src/shaders/tbirb.glsl",
         },
     };
     const run_step_inner = try tbirb.build(b);

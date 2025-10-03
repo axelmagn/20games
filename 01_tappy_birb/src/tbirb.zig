@@ -21,7 +21,7 @@ const sdtx = sokol.debugtext;
 const za = @import("zalgebra");
 const lm32 = @import("zlm").as(f32);
 const shd_solid = @import("shaders/solid.glsl.zig");
-const shd_tbirb = @import("shaders/tbirb.glsl.zig");
+const shd_display = @import("shaders/display.glsl.zig");
 const fons = @import("fontstash.zig");
 
 /// root global for app state
@@ -839,6 +839,7 @@ const DebugText = struct {
 const Renderer = struct {
     color_quad_pipe: ColorQuadPipeline = .{},
     debug_text_pipe: DebugTextPipeline = .{},
+    display_pipe: DisplayPipeline = .{},
     clear_color: Color = Color.gray0,
 
     offscreen: struct {
@@ -862,9 +863,7 @@ const Renderer = struct {
         };
 
         var img_desc: sgfx.ImageDesc = .{
-            .usage = .{
-                .color_attachment = true,
-            },
+            .usage = .{ .color_attachment = true },
             .width = main_app.win.width,
             .height = main_app.win.height,
             .pixel_format = .RGBA8,
@@ -901,6 +900,7 @@ const Renderer = struct {
 
         self.color_quad_pipe.init();
         DebugTextPipeline.init();
+        self.display_pipe.init(color_img);
     }
 
     fn draw(self: Renderer, game: Game) void {
@@ -927,6 +927,11 @@ const Renderer = struct {
 
         // finish and commit pass
         sgfx.endPass();
+
+        sgfx.beginPass(self.display.pass);
+        self.display_pipe.draw_display();
+        sgfx.endPass();
+
         sgfx.commit();
     }
 };
@@ -966,17 +971,21 @@ const ColorQuadPipeline = struct {
         const shader = sgfx.makeShader(shd_solid.solidShaderDesc(backend));
         var vert_layout = sgfx.VertexLayoutState{};
         vert_layout.attrs[shd_solid.ATTR_solid_position_in].format = .FLOAT2;
-        self.pipe = sgfx.makePipeline(.{
+        const pipe_desc: sgfx.PipelineDesc = .{
             .shader = shader,
             .layout = vert_layout,
             .index_type = .UINT16,
+            .sample_count = 1,
             .depth = .{
+                .pixel_format = .DEPTH,
                 .compare = .LESS_EQUAL,
                 .write_enabled = true,
             },
 
             .cull_mode = .NONE,
-        });
+        };
+        self.pipe = sgfx.makePipeline(pipe_desc);
+        // log.debug("color quad pipeline: {any}", .{pipe_desc});
     }
 
     fn draw_quad(
@@ -1102,7 +1111,7 @@ const DisplayPipeline = struct {
         2, 3, 0,
     };
 
-    fn init(self: *DisplayPipeline) void {
+    fn init(self: *DisplayPipeline, color_img: sgfx.Image) void {
         self.bind.vertex_buffers[0] = sgfx.makeBuffer(.{
             .usage = .{ .vertex_buffer = true, .immutable = true },
             .data = sgfx.asRange(&quad_verts),
@@ -1111,10 +1120,46 @@ const DisplayPipeline = struct {
             .usage = .{ .index_buffer = true, .immutable = true },
             .data = sgfx.asRange(&quad_idxs),
         });
+        const sampler = sgfx.makeSampler(.{
+            .min_filter = .NEAREST,
+            .mag_filter = .NEAREST,
+            .wrap_u = .CLAMP_TO_BORDER,
+            .wrap_v = .CLAMP_TO_BORDER,
+            .label = "sampler",
+        });
+        self.bind.views[shd_display.VIEW_tex] = sgfx.makeView(.{
+            .texture = .{ .image = color_img },
+            .label = "texture-view",
+        });
+        self.bind.samplers[shd_display.SMP_smp] = sampler;
 
         const backend = sgfx.queryBackend();
-        const shader = sgfx.makeShader(shd_tbirb.displayShaderDesc(backend));
-        _ = shader;
+        const shader = sgfx.makeShader(shd_display.displayShaderDesc(backend));
+        var vert_layout = sgfx.VertexLayoutState{};
+        vert_layout.attrs[shd_display.ATTR_display_position].format = .FLOAT2;
+        self.pipe = sgfx.makePipeline(.{
+            .shader = shader,
+            .layout = vert_layout,
+            .index_type = .UINT16,
+            .depth = .{
+                .compare = .LESS_EQUAL,
+                .write_enabled = true,
+            },
+            .cull_mode = .NONE,
+            .sample_count = 4,
+        });
+    }
+
+    fn draw_display(self: DisplayPipeline) void {
+        const vs_params = shd_display.VsParams{
+            .offset = za.Vec2.new(0.25, 0.0).data,
+            .scale = za.Vec2.new(0.5, 1.0).data,
+        };
+
+        // draw call
+        sgfx.applyPipeline(self.pipe);
+        sgfx.applyBindings(self.bind);
+        sgfx.applyUniforms(shd_display.UB_vs_params, sgfx.asRange(&vs_params));
     }
 };
 

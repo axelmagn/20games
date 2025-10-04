@@ -837,70 +837,55 @@ const DebugText = struct {
 };
 
 const Renderer = struct {
-    color_quad_pipe: ColorQuadPipeline = .{},
-    debug_text_pipe: DebugTextPipeline = .{},
-    display_pipe: DisplayPipeline = .{},
+    initialized: bool = false,
+    offscreen_pass: OffscreenPass = .{},
+    display_pass: DisplayPass = undefined,
+
+    color_quad_pipe: ColorQuadPipeline,
+    debug_text_pipe: DebugTextPipeline,
+    display_pipe: DisplayPipeline,
     clear_color: Color = Color.gray0,
 
-    offscreen: struct {
-        pass: sgfx.Pass = undefined,
-    } = .{},
+    const SetupOptions = struct {
+        offscreen: struct {
+            render_size: za.Vec2_i32,
+            clear_color: Color = Color.gray0,
+        },
+        display: struct {
+            clear_color: Color = Color.black,
+        },
+    };
 
-    display: struct {
-        pass: sgfx.Pass = undefined,
-    } = .{},
-
-    fn init(self: *Renderer) void {
+    fn setup(self: *Renderer, opts: SetupOptions) void {
         sgfx.setup(.{
             .environment = sglue.environment(),
             .logger = .{ .func = slog.func },
         });
 
-        var pass_action: sgfx.PassAction = .{};
+        // set up passes
+        self.offscreen_pass = OffscreenPass.create(
+            opts.offscreen.render_size,
+            opts.offscreen.clear_color,
+        );
+        self.display_pass = DisplayPass.create(opts.display.clear_color);
+
+        // set up pipelines
+
+        // const offscreen_size =
+        // self.offscreen_pass = OffscreenPass.init(main_app
+        //
+        // self.color_quad_pipe.init();
+        // DebugTextPipeline.init();
+        // self.display_pipe.init(color_img);
+    }
+
+    fn makePassAction(clear_color: Color) sgfx.PassAction {
+        var pass_action = sgfx.PassAction{};
         pass_action.colors[0] = .{
-            .load_action = .CLEAR,
-            .clear_value = self.clear_color.to(sgfx.Color),
+            .load_action = .clear,
+            .clear_value = clear_color.to(sgfx.color),
         };
-
-        var img_desc: sgfx.ImageDesc = .{
-            .usage = .{ .color_attachment = true },
-            .width = main_app.win.width,
-            .height = main_app.win.height,
-            .pixel_format = .RGBA8,
-            .sample_count = 1,
-            .label = "color-image",
-        };
-        const color_img = sgfx.makeImage(img_desc);
-        img_desc.pixel_format = .DEPTH;
-        img_desc.usage = .{ .depth_stencil_attachment = true };
-        img_desc.label = "depth-image";
-        const depth_img = sgfx.makeImage(img_desc);
-
-        self.offscreen.pass = .{
-            .action = pass_action,
-            .label = "offscreen-pass",
-        };
-        self.offscreen.pass.attachments.colors[0] = sgfx.makeView(.{
-            .color_attachment = .{ .image = color_img },
-            .label = "color-attachment",
-        });
-        self.offscreen.pass.attachments.depth_stencil = sgfx.makeView(.{
-            .depth_stencil_attachment = .{ .image = depth_img },
-            .label = "depth-attachment",
-        });
-
-        pass_action.colors[0] = .{
-            .load_action = .CLEAR,
-            .clear_value = Color.black.to(sgfx.Color),
-        };
-        self.display.pass = .{
-            .action = pass_action,
-            .swapchain = sglue.swapchain(),
-        };
-
-        self.color_quad_pipe.init();
-        DebugTextPipeline.init();
-        self.display_pipe.init(color_img);
+        return pass_action;
     }
 
     fn draw(self: Renderer, game: Game) void {
@@ -933,6 +918,87 @@ const Renderer = struct {
         sgfx.endPass();
 
         sgfx.commit();
+    }
+};
+
+/// render the game in a viewport with locked size and aspect
+const OffscreenPass = struct {
+    initialized: bool = false,
+
+    color_img: sgfx.Image = undefined,
+    depth_img: sgfx.Image = undefined,
+    color_tex: sgfx.View = undefined,
+
+    pass: sgfx.Pass = undefined,
+
+    fn setup(
+        self: *OffscreenPass,
+        render_size: za.Vec2_i32,
+        clear_color: Color,
+    ) void {
+        self.color_img = makeColorImage(render_size);
+        self.depth_img = makeDepthImage(render_size);
+        self.color_tex = sgfx.makeView(.{
+            .texture = .{ .image = self.color_img },
+        });
+        self.pass = sgfx.Pass{
+            .action = Renderer.makePassAction(clear_color),
+            .attachments = .{
+                .colors = makeColorAttachments(self.color_img),
+                .depth_stencil = makeDepthAttachment(self.depth_img),
+            },
+            .label = "offscreen-pass",
+        };
+        self.initialized = true;
+    }
+
+    inline fn makeColorImage(size: za.Vec2_i32) sgfx.Image {
+        return sgfx.makeImage(.{
+            .usage = .{ .color_attachment = true },
+            .width = size.x(),
+            .height = size.y(),
+            .pixel_format = .RGBA8,
+            .sample_count = 1,
+            .label = "color-image",
+        });
+    }
+
+    inline fn makeDepthImage(size: za.Vec2_i32) sgfx.Image {
+        return sgfx.makeImage(.{
+            .usage = .{ .depth_stencil_attachment = true },
+            .width = size.x(),
+            .height = size.y(),
+            .pixel_format = .DEPTH,
+            .sample_count = 1,
+            .label = "depth-image",
+        });
+    }
+
+    inline fn makeColorAttachments(color_img: sgfx.Image) [4]sgfx.View {
+        var colors: [4]sgfx.View = .{};
+        colors[0] = sgfx.makeView(.{
+            .color_attachment = .{ .image = color_img },
+            .label = "color-attachment",
+        });
+    }
+
+    inline fn makeDepthAttachment(depth_img: sgfx.Image) sgfx.View {
+        return sgfx.makeView(.{
+            .depth_stencil_attachment = .{ .image = depth_img },
+            .label = "depth-attachment",
+        });
+    }
+};
+
+/// blit the game viewport to the screen
+const DisplayPass = struct {
+    pass: sgfx.Pass = undefined,
+
+    fn create(clear_color: Color) DisplayPass {
+        return .{ .pass = .{
+            .action = Renderer.makePassAction(clear_color),
+            .label = "display_pass",
+        } };
     }
 };
 

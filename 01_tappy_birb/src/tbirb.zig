@@ -17,6 +17,7 @@ const sgfx = sokol.gfx;
 const sapp = sokol.app;
 const sglue = sokol.glue;
 const stime = sokol.time;
+const sshape = sokol.shape;
 const sdtx = sokol.debugtext;
 const za = @import("zalgebra");
 const lm32 = @import("zlm").as(f32);
@@ -105,10 +106,14 @@ pub const App = struct {
 
         self.win.width = app_config.windowWidth();
         self.win.height = app_config.windowHeight();
+        const offscreen_size = za.Vec2_i32.new(
+            self.win.width,
+            self.win.height,
+        );
 
         stime.setup();
         self.game.init(app_config);
-        self.renderer.init();
+        self.renderer.setup(.{ .offscreen = .{ .render_size = offscreen_size } });
     }
 
     pub fn frame(self: *App) void {
@@ -838,13 +843,12 @@ const DebugText = struct {
 
 const Renderer = struct {
     initialized: bool = false,
-    offscreen_pass: OffscreenPass = .{},
+    offscreen_pass: OffscreenPass = undefined,
     display_pass: DisplayPass = undefined,
 
-    color_quad_pipe: ColorQuadPipeline,
-    debug_text_pipe: DebugTextPipeline,
-    display_pipe: DisplayPipeline,
-    clear_color: Color = Color.gray0,
+    color_quad_pipe: ColorQuadPipeline = undefined,
+    debug_text_pipe: DebugTextPipeline = .{},
+    display_pipe: DisplayPipeline = undefined,
 
     const SetupOptions = struct {
         offscreen: struct {
@@ -853,7 +857,7 @@ const Renderer = struct {
         },
         display: struct {
             clear_color: Color = Color.black,
-        },
+        } = .{},
     };
 
     fn setup(self: *Renderer, opts: SetupOptions) void {
@@ -867,23 +871,22 @@ const Renderer = struct {
             opts.offscreen.render_size,
             opts.offscreen.clear_color,
         );
-        self.display_pass = DisplayPass.create(opts.display.clear_color);
+        self.display_pass = DisplayPass.create(
+            opts.display.clear_color,
+            sglue.swapchain(),
+        );
 
         // set up pipelines
-
-        // const offscreen_size =
-        // self.offscreen_pass = OffscreenPass.init(main_app
-        //
-        // self.color_quad_pipe.init();
-        // DebugTextPipeline.init();
-        // self.display_pipe.init(color_img);
+        DebugTextPipeline.setup();
+        self.color_quad_pipe = ColorQuadPipeline.create();
+        self.display_pipe = DisplayPipeline.create(self.offscreen_pass.color_tex);
     }
 
     fn makePassAction(clear_color: Color) sgfx.PassAction {
         var pass_action = sgfx.PassAction{};
         pass_action.colors[0] = .{
-            .load_action = .clear,
-            .clear_value = clear_color.to(sgfx.color),
+            .load_action = .CLEAR,
+            .clear_value = clear_color.to(sgfx.Color),
         };
         return pass_action;
     }
@@ -893,7 +896,7 @@ const Renderer = struct {
         self.debug_text_pipe.resetCanvas();
 
         // begin offscreen pass
-        sgfx.beginPass(self.offscreen.pass);
+        sgfx.beginPass(self.offscreen_pass.pass);
 
         // draw quads
         for (game.entities) |entity_opt| {
@@ -913,7 +916,7 @@ const Renderer = struct {
         // finish and commit pass
         sgfx.endPass();
 
-        sgfx.beginPass(self.display.pass);
+        sgfx.beginPass(self.offscreen_pass.pass);
         self.display_pipe.draw_display();
         sgfx.endPass();
 
@@ -921,21 +924,35 @@ const Renderer = struct {
     }
 };
 
+const OffscreenRenderer = struct {
+    offscreen: struct {
+        pass: sgfx.Pass,
+        pipe: sgfx.Pipeline,
+        bind: sgfx.Bindings,
+    },
+    display: struct {
+        pass: sgfx.Pass,
+        pipe: sgfx.Pipeline,
+        bind: sgfx.Bindings,
+    },
+
+    fn create() OffscreenRenderer {}
+};
+
 /// render the game in a viewport with locked size and aspect
 const OffscreenPass = struct {
-    initialized: bool = false,
+    color_img: sgfx.Image,
+    depth_img: sgfx.Image,
+    color_tex: sgfx.View,
 
-    color_img: sgfx.Image = undefined,
-    depth_img: sgfx.Image = undefined,
-    color_tex: sgfx.View = undefined,
+    pass: sgfx.Pass,
 
-    pass: sgfx.Pass = undefined,
-
-    fn setup(
-        self: *OffscreenPass,
+    fn create(
         render_size: za.Vec2_i32,
         clear_color: Color,
-    ) void {
+    ) OffscreenPass {
+        // sheer laziness after too many refactors
+        var self: OffscreenPass = undefined;
         self.color_img = makeColorImage(render_size);
         self.depth_img = makeDepthImage(render_size);
         self.color_tex = sgfx.makeView(.{
@@ -947,12 +964,13 @@ const OffscreenPass = struct {
                 .colors = makeColorAttachments(self.color_img),
                 .depth_stencil = makeDepthAttachment(self.depth_img),
             },
+
             .label = "offscreen-pass",
         };
-        self.initialized = true;
+        return self;
     }
 
-    inline fn makeColorImage(size: za.Vec2_i32) sgfx.Image {
+    fn makeColorImage(size: za.Vec2_i32) sgfx.Image {
         return sgfx.makeImage(.{
             .usage = .{ .color_attachment = true },
             .width = size.x(),
@@ -963,7 +981,7 @@ const OffscreenPass = struct {
         });
     }
 
-    inline fn makeDepthImage(size: za.Vec2_i32) sgfx.Image {
+    fn makeDepthImage(size: za.Vec2_i32) sgfx.Image {
         return sgfx.makeImage(.{
             .usage = .{ .depth_stencil_attachment = true },
             .width = size.x(),
@@ -974,15 +992,16 @@ const OffscreenPass = struct {
         });
     }
 
-    inline fn makeColorAttachments(color_img: sgfx.Image) [4]sgfx.View {
-        var colors: [4]sgfx.View = .{};
+    fn makeColorAttachments(color_img: sgfx.Image) [4]sgfx.View {
+        var colors: [4]sgfx.View = [_]sgfx.View{.{}} ** 4;
         colors[0] = sgfx.makeView(.{
             .color_attachment = .{ .image = color_img },
             .label = "color-attachment",
         });
+        return colors;
     }
 
-    inline fn makeDepthAttachment(depth_img: sgfx.Image) sgfx.View {
+    fn makeDepthAttachment(depth_img: sgfx.Image) sgfx.View {
         return sgfx.makeView(.{
             .depth_stencil_attachment = .{ .image = depth_img },
             .label = "depth-attachment",
@@ -994,9 +1013,10 @@ const OffscreenPass = struct {
 const DisplayPass = struct {
     pass: sgfx.Pass = undefined,
 
-    fn create(clear_color: Color) DisplayPass {
+    fn create(clear_color: Color, swapchain: sgfx.Swapchain) DisplayPass {
         return .{ .pass = .{
             .action = Renderer.makePassAction(clear_color),
+            .swapchain = swapchain,
             .label = "display_pass",
         } };
     }
@@ -1021,7 +1041,8 @@ const ColorQuadPipeline = struct {
         2, 3, 0,
     };
 
-    fn init(self: *ColorQuadPipeline) void {
+    fn create() ColorQuadPipeline {
+        var self = ColorQuadPipeline{};
         // init quad buffers on gpu
         self.bind.vertex_buffers[0] = sgfx.makeBuffer(.{
             .usage = .{ .vertex_buffer = true, .immutable = true },
@@ -1051,7 +1072,7 @@ const ColorQuadPipeline = struct {
             .cull_mode = .NONE,
         };
         self.pipe = sgfx.makePipeline(pipe_desc);
-        // log.debug("color quad pipeline: {any}", .{pipe_desc});
+        return self;
     }
 
     fn draw_quad(
@@ -1086,7 +1107,7 @@ const DebugTextPipeline = struct {
     const c64 = 1;
     const oric = 2;
 
-    pub fn init() void {
+    pub fn setup() void {
         sdtx.setup(.{
             .fonts = blk: {
                 var f: [8]sdtx.FontDesc = @splat(.{});
@@ -1096,6 +1117,11 @@ const DebugTextPipeline = struct {
                 break :blk f;
             },
             .logger = .{ .func = slog.func },
+            .context = .{
+                .color_format = .RGBA8,
+                .depth_format = .DEPTH,
+                .sample_count = 1,
+            },
         });
     }
 
@@ -1177,35 +1203,35 @@ const DisplayPipeline = struct {
         2, 3, 0,
     };
 
-    fn init(self: *DisplayPipeline, color_img: sgfx.Image) void {
-        self.bind.vertex_buffers[0] = sgfx.makeBuffer(.{
+    fn create(color_tex: sgfx.View) DisplayPipeline {
+        return .{
+            .pipe = makePipeline(),
+            .bind = makeBindings(color_tex),
+        };
+    }
+
+    fn makeBindings(color_tex: sgfx.View) sgfx.Bindings {
+        var bind = sgfx.Bindings{};
+        bind.vertex_buffers[0] = sgfx.makeBuffer(.{
             .usage = .{ .vertex_buffer = true, .immutable = true },
             .data = sgfx.asRange(&quad_verts),
         });
-        self.bind.index_buffer = sgfx.makeBuffer(.{
+        bind.index_buffer = sgfx.makeBuffer(.{
             .usage = .{ .index_buffer = true, .immutable = true },
             .data = sgfx.asRange(&quad_idxs),
         });
         const sampler = sgfx.makeSampler(.{
-            .min_filter = .NEAREST,
-            .mag_filter = .NEAREST,
-            .wrap_u = .CLAMP_TO_BORDER,
-            .wrap_v = .CLAMP_TO_BORDER,
-            .label = "sampler",
+            .label = "color-sampler",
         });
-        self.bind.views[shd_display.VIEW_tex] = sgfx.makeView(.{
-            .texture = .{ .image = color_img },
-            .label = "texture-view",
-        });
-        self.bind.samplers[shd_display.SMP_smp] = sampler;
+        bind.views[shd_display.VIEW_tex] = color_tex;
+        bind.samplers[shd_display.SMP_smp] = sampler;
+        return bind;
+    }
 
-        const backend = sgfx.queryBackend();
-        const shader = sgfx.makeShader(shd_display.displayShaderDesc(backend));
-        var vert_layout = sgfx.VertexLayoutState{};
-        vert_layout.attrs[shd_display.ATTR_display_position].format = .FLOAT2;
-        self.pipe = sgfx.makePipeline(.{
-            .shader = shader,
-            .layout = vert_layout,
+    fn makePipeline() sgfx.Pipeline {
+        return sgfx.makePipeline(.{
+            .shader = makeShader(),
+            .layout = makeVertLayout(),
             .index_type = .UINT16,
             .depth = .{
                 .compare = .LESS_EQUAL,
@@ -1214,6 +1240,18 @@ const DisplayPipeline = struct {
             .cull_mode = .NONE,
             .sample_count = 4,
         });
+    }
+
+    fn makeShader() sgfx.Shader {
+        const backend = sgfx.queryBackend();
+        const desc = shd_display.displayShaderDesc(backend);
+        return sgfx.makeShader(desc);
+    }
+
+    fn makeVertLayout() sgfx.VertexLayoutState {
+        var vert_layout = sgfx.VertexLayoutState{};
+        vert_layout.attrs[shd_display.ATTR_display_position].format = .FLOAT2;
+        return vert_layout;
     }
 
     fn draw_display(self: DisplayPipeline) void {

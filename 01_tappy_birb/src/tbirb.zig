@@ -88,6 +88,7 @@ pub const App = struct {
     game: Game = .{},
 
     renderer: Renderer = .{},
+    // test_renderer: TestOffscreenRenderer = .{},
 
     /// window information
     win: struct {
@@ -114,11 +115,13 @@ pub const App = struct {
         stime.setup();
         self.game.init(app_config);
         self.renderer.setup(.{ .offscreen = .{ .render_size = offscreen_size } });
+        // self.test_renderer.setup();
     }
 
     pub fn frame(self: *App) void {
         self.game.tick();
         self.renderer.draw(self.game);
+        // self.test_renderer.draw();
     }
 
     pub fn event(self: *App, ev: InputEvent) void {
@@ -924,19 +927,189 @@ const Renderer = struct {
     }
 };
 
-const OffscreenRenderer = struct {
+const TestOffscreenRenderer = struct {
     offscreen: struct {
-        pass: sgfx.Pass,
-        pipe: sgfx.Pipeline,
-        bind: sgfx.Bindings,
-    },
-    display: struct {
-        pass: sgfx.Pass,
-        pipe: sgfx.Pipeline,
-        bind: sgfx.Bindings,
-    },
+        pass: sgfx.Pass = .{},
+        pipe: sgfx.Pipeline = .{},
+        bind: sgfx.Bindings = .{},
+        color_img: sgfx.Image = .{},
+    } = .{},
 
-    fn create() OffscreenRenderer {}
+    display: struct {
+        pass: sgfx.Pass = .{},
+        pipe: sgfx.Pipeline = .{},
+        bind: sgfx.Bindings = .{},
+    } = .{},
+
+    const Self = TestOffscreenRenderer;
+
+    const quad_verts = [_]f32{
+        -1, -1,
+        -1, 1,
+        1,  1,
+        1,  -1,
+    };
+    const quad_idxs = [_]u16{
+        0, 1, 2,
+        2, 3, 0,
+    };
+
+    fn setup(self: *Self) void {
+        self.* = .{};
+        sgfx.setup(.{
+            .environment = sglue.environment(),
+            .logger = .{ .func = slog.func },
+        });
+        self.setupOffscreen();
+        self.setupDisplay();
+    }
+
+    fn setupOffscreen(self: *Self) void {
+        const offscreen_width = 256;
+        const offscreen_height = 256;
+        const offscreen_sample_count = 1;
+
+        // make render targets
+        const color_img = sgfx.makeImage(.{
+            .usage = .{ .color_attachment = true },
+            .width = offscreen_width,
+            .height = offscreen_height,
+            .sample_count = offscreen_sample_count,
+            .pixel_format = .RGBA8,
+        });
+        self.offscreen.color_img = color_img;
+
+        const depth_img = sgfx.makeImage(.{
+            .usage = .{ .depth_stencil_attachment = true },
+            .width = offscreen_width,
+            .height = offscreen_height,
+            .sample_count = offscreen_sample_count,
+            .pixel_format = .DEPTH,
+        });
+
+        // set up pass
+        self.offscreen.pass.action.colors[0] = .{
+            .load_action = .CLEAR,
+            .clear_value = .{ .r = 0.25, .g = 0.25, .b = 0.25, .a = 1.0 },
+        };
+        self.offscreen.pass.attachments.colors[0] = sgfx.makeView(.{
+            .color_attachment = .{ .image = color_img },
+        });
+        self.offscreen.pass.attachments.depth_stencil = sgfx.makeView(.{
+            .depth_stencil_attachment = .{ .image = depth_img },
+        });
+
+        // set up pipeline
+        const shader_desc = shd_solid.solidShaderDesc(sgfx.queryBackend());
+        self.offscreen.pipe = sgfx.makePipeline(.{
+            .shader = sgfx.makeShader(shader_desc),
+            .layout = init: {
+                var l = sgfx.VertexLayoutState{};
+                l.attrs[shd_solid.ATTR_solid_position_in].format = .FLOAT2;
+                break :init l;
+            },
+            .index_type = .UINT16,
+            .cull_mode = .BACK,
+            .sample_count = offscreen_sample_count,
+            .depth = .{
+                .pixel_format = .DEPTH,
+                .compare = .LESS_EQUAL,
+                .write_enabled = true,
+            },
+            .colors = init: {
+                var c: [sgfx.max_color_attachments]sgfx.ColorTargetState = @splat(.{});
+                c[0].pixel_format = .RGBA8;
+                break :init c;
+            },
+        });
+
+        // set up bindings
+        self.offscreen.bind.vertex_buffers[0] = sgfx.makeBuffer(.{
+            .usage = .{ .vertex_buffer = true, .immutable = true },
+            .data = sgfx.asRange(&quad_verts),
+        });
+        self.offscreen.bind.index_buffer = sgfx.makeBuffer(.{
+            .usage = .{ .index_buffer = true, .immutable = true },
+            .data = sgfx.asRange(&quad_idxs),
+        });
+    }
+
+    fn setupDisplay(self: *Self) void {
+        self.display.pass.action.colors[0] = .{
+            .load_action = .CLEAR,
+        };
+        self.display.pass.swapchain = sglue.swapchain();
+
+        const shader_desc = shd_display.displayShaderDesc(sgfx.queryBackend());
+        self.display.pipe = sgfx.makePipeline(.{
+            .shader = sgfx.makeShader(shader_desc),
+            .layout = init: {
+                var l = sgfx.VertexLayoutState{};
+                l.attrs[shd_display.ATTR_display_position].format = .FLOAT2;
+                break :init l;
+            },
+            .index_type = .UINT16,
+            .cull_mode = .NONE,
+            .depth = .{
+                .compare = .LESS_EQUAL,
+                .write_enabled = true,
+            },
+        });
+
+        self.display.bind.views[shd_display.VIEW_tex] = sgfx.makeView(.{
+            .texture = .{ .image = self.offscreen.color_img },
+        });
+        self.display.bind.vertex_buffers[0] = sgfx.makeBuffer(.{
+            .usage = .{ .vertex_buffer = true, .immutable = true },
+            .data = sgfx.asRange(&quad_verts),
+        });
+        self.display.bind.index_buffer = sgfx.makeBuffer(.{
+            .usage = .{ .index_buffer = true, .immutable = true },
+            .data = sgfx.asRange(&quad_idxs),
+        });
+        self.display.bind.samplers[shd_display.SMP_smp] = sgfx.makeSampler(.{
+            .min_filter = .NEAREST,
+            .mag_filter = .NEAREST,
+            .wrap_u = .REPEAT,
+            .wrap_v = .REPEAT,
+        });
+    }
+
+    fn draw(self: *Self) void {
+        // render to offscreen
+        sgfx.beginPass(self.offscreen.pass);
+        sgfx.applyPipeline(self.offscreen.pipe);
+        sgfx.applyBindings(self.offscreen.bind);
+        sgfx.applyUniforms(
+            shd_solid.UB_vs_params,
+            sgfx.asRange(&shd_solid.VsParams{
+                .model = za.Mat4.identity().scale(za.Vec3.new(0.5, 0.5, 0.5)),
+                .view = za.Mat4.identity(),
+            }),
+        );
+        sgfx.applyUniforms(
+            shd_solid.UB_fs_params,
+            sgfx.asRange(&shd_solid.FsParams{
+                .color = Color.new(0.2, 0.4, 0.6, 1.0).to(za.Vec4).toArray(),
+            }),
+        );
+        sgfx.draw(0, quad_idxs.len, 1);
+        sgfx.endPass();
+
+        sgfx.beginPass(self.display.pass);
+        sgfx.applyPipeline(self.display.pipe);
+        sgfx.applyBindings(self.display.bind);
+        sgfx.applyUniforms(
+            shd_display.UB_vs_params,
+            sgfx.asRange(&shd_display.VsParams{
+                .scale = za.Vec2.new(0.5, 0.5).data,
+                .offset = za.Vec2.zero().data,
+            }),
+        );
+        sgfx.draw(0, quad_idxs.len, 1);
+        sgfx.endPass();
+        sgfx.commit();
+    }
 };
 
 /// render the game in a viewport with locked size and aspect
@@ -1287,7 +1460,7 @@ pub fn ncast(T: type, x: anytype) T {
     @compileError("unhandled numeric type conversion");
 }
 
-test "checkOverlap" {
+test "Rect.checkOverlap" {
     const t = std.testing;
     const r0 = Rect{
         .pos = za.Vec2.new(0, 0),

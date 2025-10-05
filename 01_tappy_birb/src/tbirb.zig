@@ -114,7 +114,7 @@ pub const App = struct {
 
         stime.setup();
         self.game.init(app_config);
-        self.renderer.setup(.{ .offscreen = .{ .render_size = offscreen_size } });
+        self.renderer.init(.{ .offscreen = .{ .render_size = offscreen_size } });
         // self.test_renderer.setup();
     }
 
@@ -844,6 +844,7 @@ const DebugText = struct {
     offset: za.Vec2 = za.Vec2.zero(),
 };
 
+/// renders the game by managing sgfx primitives and draw calls
 const Renderer = struct {
     initialized: bool = false,
     offscreen_pass: OffscreenPass = undefined,
@@ -853,7 +854,7 @@ const Renderer = struct {
     debug_text_pipe: DebugTextPipeline = .{},
     display_pipe: DisplayPipeline = undefined,
 
-    const SetupOptions = struct {
+    const InitOptions = struct {
         offscreen: struct {
             render_size: za.Vec2_i32,
             clear_color: Color = Color.gray0,
@@ -863,7 +864,7 @@ const Renderer = struct {
         } = .{},
     };
 
-    fn setup(self: *Renderer, opts: SetupOptions) void {
+    fn init(self: *Renderer, opt: InitOptions) void {
         sgfx.setup(.{
             .environment = sglue.environment(),
             .logger = .{ .func = slog.func },
@@ -871,11 +872,11 @@ const Renderer = struct {
 
         // set up passes
         self.offscreen_pass = OffscreenPass.create(
-            opts.offscreen.render_size,
-            opts.offscreen.clear_color,
+            opt.offscreen.render_size,
+            opt.offscreen.clear_color,
         );
         self.display_pass = DisplayPass.create(
-            opts.display.clear_color,
+            opt.display.clear_color,
             sglue.swapchain(),
         );
 
@@ -1392,7 +1393,7 @@ const DisplayPipeline = struct {
         bind.index_buffer = sgfx.makeBuffer(.{
             .usage = .{ .index_buffer = true, .immutable = true },
             .data = sgfx.asRange(&quad_idxs),
-        });
+        });unity
         const sampler = sgfx.makeSampler(.{
             .label = "color-sampler",
         });
@@ -1437,6 +1438,7 @@ const DisplayPipeline = struct {
         sgfx.applyPipeline(self.pipe);
         sgfx.applyBindings(self.bind);
         sgfx.applyUniforms(shd_display.UB_vs_params, sgfx.asRange(&vs_params));
+        sgfx.draw(0, quad_idxs.len, 1);
     }
 };
 

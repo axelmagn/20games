@@ -69,6 +69,7 @@ export fn sFrame() void {
 }
 
 export fn sEvent(sev: [*c]const sapp.Event) void {
+    // log.debug("event: {any}", .{sev});
     const ev = InputEvent.from(sev[0]);
     main_app.event(ev);
 }
@@ -89,7 +90,7 @@ pub const App = struct {
     game: Game = .{},
 
     // renderer: OldRenderer = .{},
-    // test_renderer: TestOffscreenRenderer = .{},
+    test_renderer: TestOffscreenRenderer = .{},
     renderer: Renderer = undefined,
 
     /// window information
@@ -113,24 +114,25 @@ pub const App = struct {
         self.game.init(app_config);
         // self.renderer.init(.{ .offscreen = .{ .render_size = offscreen_size } });
         // self.test_renderer.setup();
-        self.renderer = Renderer.init(.{
+
+        self.renderer = try Renderer.init(.{
             // TODO: make part of app config
             .offscreen = .{
                 .render_width = app_config.windowWidth(),
                 .render_height = app_config.windowHeight(),
                 .samples = 1,
-                .clear_color = Color.gray0,
+                .clear_color = Color.gray1,
             },
             .display = .{
-                .clear_color = Color.black,
+                .clear_color = Color.gray0,
             },
-        }) catch |err| debug.panic("{any}", .{err});
+        });
     }
 
     pub fn frame(self: *App) void {
         self.game.tick();
-        self.renderer.draw(self.game) catch |err| debug.panic("render error: {any}", .{err});
         // self.test_renderer.draw();
+        self.renderer.draw(self.game);
     }
 
     pub fn event(self: *App, ev: InputEvent) void {
@@ -1455,6 +1457,7 @@ const DisplayPipeline = struct {
 const Renderer = struct {
     offscreen_pass: RenderPass,
     display_pass: RenderPass,
+    display_stage: RenderStage,
 
     const Self = @This();
 
@@ -1479,14 +1482,16 @@ const Renderer = struct {
             .environment = sglue.environment(),
             .logger = .{ .func = slog.func },
         });
+
+        const offscreen_pass = makeOffscreenPass(cfg.offscreen);
         return .{
-            .offscreen_pass = try makeOffscreenPass(cfg.offscreen),
-            .display_pass = try makeDisplayPass(cfg.display),
+            .offscreen_pass = offscreen_pass,
+            .display_pass = makeDisplayPass(cfg.display),
+            .display_stage = DisplayStage.render_stage(offscreen_pass.render_tgt.?),
         };
     }
 
-    fn draw(self: *Self, game: Game) !void {
-        _ = game;
+    fn draw(self: *Self, game: Game) void {
         // offscreen pass
         sgfx.beginPass(self.offscreen_pass.pass);
         // TODO: offscreen stages
@@ -1494,11 +1499,13 @@ const Renderer = struct {
 
         // display pass
         sgfx.beginPass(self.display_pass.pass);
-        // TODO: display stages
+        self.display_stage.draw(game);
         sgfx.endPass();
+
+        sgfx.commit();
     }
 
-    fn makeOffscreenPass(cfg: Config.Offscreen) !RenderPass {
+    fn makeOffscreenPass(cfg: Config.Offscreen) RenderPass {
         const color_img = sgfx.makeImage(.{
             .usage = .{ .color_attachment = true },
             .width = cfg.render_width,
@@ -1544,7 +1551,7 @@ const Renderer = struct {
         };
     }
 
-    fn makeDisplayPass(cfg: Config.Display) !RenderPass {
+    fn makeDisplayPass(cfg: Config.Display) RenderPass {
         return .{
             .pass = .{
                 .action = .{ .colors = init: {
@@ -1561,6 +1568,101 @@ const Renderer = struct {
     }
 };
 
+const DisplayStage = struct {
+    render_src: sgfx.Image,
+
+    const quad_verts = [_]f32{
+        -1, -1,
+        -1, 1,
+        1,  1,
+        1,  -1,
+    };
+
+    const quad_idxs = [_]u16{
+        0, 1, 2,
+        2, 3, 0,
+    };
+
+    const vtable: RenderStage.VTable = .{
+        .draw = draw,
+    };
+
+    fn render_stage(render_src: sgfx.Image) RenderStage {
+        return RenderStage{
+            .pipe = makePipeline(),
+            .bind = makeBindings(render_src),
+            .vtable = &vtable,
+        };
+    }
+
+    fn draw(_: Game) void {
+        const t = stime.sec(stime.now());
+        const x = @sin(ncast(f32, t)) * 0.25 + 0.5;
+        sgfx.applyUniforms(
+            shd_display.UB_vs_params,
+            sgfx.asRange(&shd_display.VsParams{
+                .scale = za.Vec2.new(x, x).data,
+                .offset = za.Vec2.zero().data,
+            }),
+        );
+        sgfx.draw(0, quad_idxs.len, 1);
+    }
+
+    fn makePipeline() sgfx.Pipeline {
+        const shader_desc = shd_display.displayShaderDesc(sgfx.queryBackend());
+        const shader = sgfx.makeShader(shader_desc);
+        return sgfx.makePipeline(.{
+            .shader = shader,
+            .layout = init: {
+                var l = sgfx.VertexLayoutState{};
+                l.attrs[shd_display.ATTR_display_position].format = .FLOAT2;
+                break :init l;
+            },
+            .index_type = .UINT16,
+            .cull_mode = .NONE,
+            .depth = .{
+                .compare = .LESS_EQUAL,
+                .write_enabled = true,
+            },
+        });
+    }
+
+    fn makeBindings(render_src: sgfx.Image) sgfx.Bindings {
+        const render_src_tex = sgfx.makeView(.{
+            .texture = .{ .image = render_src },
+        });
+        return sgfx.Bindings{
+            .views = init: {
+                var v: [sgfx.max_view_bindslots]sgfx.View = @splat(.{});
+                v[shd_display.VIEW_tex] = render_src_tex;
+                break :init v;
+            },
+            .vertex_buffers = init: {
+                var v: [sgfx.max_vertexbuffer_bindslots]sgfx.Buffer = @splat(.{});
+                v[0] = sgfx.makeBuffer(.{
+                    .usage = .{ .vertex_buffer = true, .immutable = true },
+                    .data = sgfx.asRange(&quad_verts),
+                });
+                break :init v;
+            },
+            .index_buffer = sgfx.makeBuffer(.{
+                .usage = .{ .index_buffer = true, .immutable = true },
+                .data = sgfx.asRange(&quad_idxs),
+            }),
+            .samplers = init: {
+                var s: [sgfx.max_sampler_bindslots]sgfx.Sampler = @splat(.{});
+                s[shd_display.SMP_smp] = sgfx.makeSampler(.{
+                    .min_filter = .NEAREST,
+                    .mag_filter = .NEAREST,
+                    .wrap_u = .REPEAT,
+                    .wrap_v = .REPEAT,
+                });
+                break :init s;
+            },
+        };
+    }
+};
+
 const RenderPass = struct {
     pass: sgfx.Pass,
     render_tgt: ?sgfx.Image = null,
@@ -1572,21 +1674,18 @@ const RenderStage = struct {
     pipe: sgfx.Pipeline,
     bind: sgfx.Bindings,
 
-    ptr: *anyopaque,
     vtable: *const VTable,
 
     const Self = @This();
 
     const VTable = struct {
-        draw: *const fn (*anyopaque, Game) RenderStage.Error!void,
+        draw: *const fn (Game) void,
     };
 
-    const Error = struct {};
-
-    fn draw(self: Self, game: *Game) RenderStage.Error!void {
+    fn draw(self: Self, game: Game) void {
         sgfx.applyPipeline(self.pipe);
         sgfx.applyBindings(self.bind);
-        self.vtable.draw(self.ptr, game);
+        self.vtable.draw(game);
     }
 };
 

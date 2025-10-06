@@ -1455,9 +1455,10 @@ const DisplayPipeline = struct {
 };
 
 const Renderer = struct {
+    config: Config,
     offscreen_pass: RenderPass,
     display_pass: RenderPass,
-    display_stage: RenderStage,
+    display_stage: DisplayStage,
 
     const Self = @This();
 
@@ -1485,9 +1486,14 @@ const Renderer = struct {
 
         const offscreen_pass = makeOffscreenPass(cfg.offscreen);
         return .{
+            .config = cfg,
             .offscreen_pass = offscreen_pass,
             .display_pass = makeDisplayPass(cfg.display),
-            .display_stage = DisplayStage.render_stage(offscreen_pass.render_tgt.?),
+            .display_stage = DisplayStage.init(
+                offscreen_pass.render_tgt.?,
+                @floatFromInt(cfg.offscreen.render_width),
+                @floatFromInt(cfg.offscreen.render_height),
+            ),
         };
     }
 
@@ -1498,7 +1504,9 @@ const Renderer = struct {
         sgfx.endPass();
 
         // display pass
-        sgfx.beginPass(self.display_pass.pass);
+        // sgfx.beginPass(self.display_pass.pass);
+        // we have to reconstruct the display pass each time for the correct resolution
+        sgfx.beginPass(makeDisplayPass(self.config.display).pass);
         self.display_stage.draw(game);
         sgfx.endPass();
 
@@ -1570,6 +1578,11 @@ const Renderer = struct {
 
 const DisplayStage = struct {
     render_src: sgfx.Image,
+    render_src_width: f32,
+    render_src_height: f32,
+
+    pipe: sgfx.Pipeline,
+    bind: sgfx.Bindings,
 
     const quad_verts = [_]f32{
         -1, -1,
@@ -1587,21 +1600,39 @@ const DisplayStage = struct {
         .draw = draw,
     };
 
-    fn render_stage(render_src: sgfx.Image) RenderStage {
-        return RenderStage{
+    fn init(render_src: sgfx.Image, render_src_width: f32, render_src_height: f32) DisplayStage {
+        return .{
+            .render_src = render_src,
+            .render_src_width = render_src_width,
+            .render_src_height = render_src_height,
             .pipe = makePipeline(),
             .bind = makeBindings(render_src),
-            .vtable = &vtable,
         };
     }
 
-    fn draw(_: Game) void {
-        const t = stime.sec(stime.now());
-        const x = @sin(ncast(f32, t)) * 0.25 + 0.5;
+    fn draw(self: DisplayStage, _: Game) void {
+        sgfx.applyPipeline(self.pipe);
+        sgfx.applyBindings(self.bind);
+
+        const disp_w = sapp.widthf();
+        const disp_h = sapp.heightf();
+        var rndr_w = self.render_src_width;
+        var rndr_h = self.render_src_height;
+
+        // fit render pane to window
+        rndr_h *= disp_w / rndr_w;
+        rndr_w = disp_w;
+        if (rndr_h > disp_h) {
+            rndr_w *= disp_h / rndr_h;
+            rndr_h = disp_h;
+        }
+        rndr_w /= disp_w;
+        rndr_h /= disp_h;
+
         sgfx.applyUniforms(
             shd_display.UB_vs_params,
             sgfx.asRange(&shd_display.VsParams{
-                .scale = za.Vec2.new(x, x).data,
+                .scale = za.Vec2.new(rndr_w, rndr_h).data,
                 .offset = za.Vec2.zero().data,
             }),
         );

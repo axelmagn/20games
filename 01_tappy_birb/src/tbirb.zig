@@ -1,4 +1,4 @@
-//------------------------------------------------------------------------------
+//-----------------------------------------------------------------------------
 //  Tappy Birb
 //
 //  A small demake of Flappy Bird
@@ -51,7 +51,7 @@ export fn sInit() void {
     var allocator = switch (builtin.target.cpu.arch) {
         .wasm32, .wasm64 => heap.c_allocator,
         else => blk: {
-            var gpa = heap.GeneralPurposeAllocator(.{}){};
+            var gpa = heap.GeneralPurposeAllocator(.{}).init;
             break :blk gpa.allocator();
         },
     };
@@ -80,15 +80,17 @@ export fn sCleanup() void {
 pub const App = struct {
     /// general purpose allocator
     gpa: mem.Allocator = undefined,
-    // arena: mem.Allocator = undefined,
+    arena: std.heap.ArenaAllocator = undefined,
+    arena_buf: []u8 = undefined,
 
     config: AppConfig = .{},
 
     /// game state
     game: Game = .{},
 
-    renderer: Renderer = .{},
+    // renderer: OldRenderer = .{},
     // test_renderer: TestOffscreenRenderer = .{},
+    renderer: Renderer = undefined,
 
     /// window information
     win: struct {
@@ -103,24 +105,31 @@ pub const App = struct {
         self.gpa = gpa;
         self.config = app_config;
 
-        // TODO: arena allocator
-
-        self.win.width = app_config.windowWidth();
-        self.win.height = app_config.windowHeight();
-        const offscreen_size = za.Vec2_i32.new(
-            self.win.width,
-            self.win.height,
-        );
+        self.arena_buf = gpa.alloc(u8, app_config.arena_size) catch |err| debug.panic("{any}", .{err});
+        var fba = std.heap.FixedBufferAllocator.init(self.arena_buf);
+        self.arena = std.heap.ArenaAllocator.init(fba.allocator());
 
         stime.setup();
         self.game.init(app_config);
-        self.renderer.init(.{ .offscreen = .{ .render_size = offscreen_size } });
+        // self.renderer.init(.{ .offscreen = .{ .render_size = offscreen_size } });
         // self.test_renderer.setup();
+        self.renderer = Renderer.init(.{
+            // TODO: make part of app config
+            .offscreen = .{
+                .render_width = app_config.windowWidth(),
+                .render_height = app_config.windowHeight(),
+                .samples = 1,
+                .clear_color = Color.gray0,
+            },
+            .display = .{
+                .clear_color = Color.black,
+            },
+        }) catch |err| debug.panic("{any}", .{err});
     }
 
     pub fn frame(self: *App) void {
         self.game.tick();
-        self.renderer.draw(self.game);
+        self.renderer.draw(self.game) catch |err| debug.panic("render error: {any}", .{err});
         // self.test_renderer.draw();
     }
 
@@ -138,6 +147,7 @@ const AppConfig = struct {
     aspect_width: i32 = 10,
     aspect_height: i32 = 16,
     aspect_factor: i32 = 6,
+    arena_size: usize = 64 * 1024, // 64 KB
 
     player: struct {
         size: f32 = 32,
@@ -845,7 +855,7 @@ const DebugText = struct {
 };
 
 /// renders the game by managing sgfx primitives and draw calls
-const Renderer = struct {
+const OldRenderer = struct {
     initialized: bool = false,
     offscreen_pass: OffscreenPass = undefined,
     display_pass: DisplayPass = undefined,
@@ -864,7 +874,7 @@ const Renderer = struct {
         } = .{},
     };
 
-    fn init(self: *Renderer, opt: InitOptions) void {
+    fn init(self: *OldRenderer, opt: InitOptions) void {
         sgfx.setup(.{
             .environment = sglue.environment(),
             .logger = .{ .func = slog.func },
@@ -895,7 +905,7 @@ const Renderer = struct {
         return pass_action;
     }
 
-    fn draw(self: Renderer, game: Game) void {
+    fn draw(self: OldRenderer, game: Game) void {
         // DebugTextPipeline.hello_world();
         self.debug_text_pipe.resetCanvas();
 
@@ -1133,7 +1143,7 @@ const OffscreenPass = struct {
             .texture = .{ .image = self.color_img },
         });
         self.pass = sgfx.Pass{
-            .action = Renderer.makePassAction(clear_color),
+            .action = OldRenderer.makePassAction(clear_color),
             .attachments = .{
                 .colors = makeColorAttachments(self.color_img),
                 .depth_stencil = makeDepthAttachment(self.depth_img),
@@ -1189,7 +1199,7 @@ const DisplayPass = struct {
 
     fn create(clear_color: Color, swapchain: sgfx.Swapchain) DisplayPass {
         return .{ .pass = .{
-            .action = Renderer.makePassAction(clear_color),
+            .action = OldRenderer.makePassAction(clear_color),
             .swapchain = swapchain,
             .label = "display_pass",
         } };
@@ -1393,7 +1403,7 @@ const DisplayPipeline = struct {
         bind.index_buffer = sgfx.makeBuffer(.{
             .usage = .{ .index_buffer = true, .immutable = true },
             .data = sgfx.asRange(&quad_idxs),
-        });unity
+        });
         const sampler = sgfx.makeSampler(.{
             .label = "color-sampler",
         });
@@ -1439,6 +1449,144 @@ const DisplayPipeline = struct {
         sgfx.applyBindings(self.bind);
         sgfx.applyUniforms(shd_display.UB_vs_params, sgfx.asRange(&vs_params));
         sgfx.draw(0, quad_idxs.len, 1);
+    }
+};
+
+const Renderer = struct {
+    offscreen_pass: RenderPass,
+    display_pass: RenderPass,
+
+    const Self = @This();
+
+    const Config = struct {
+        offscreen: Offscreen,
+        display: Display,
+
+        const Offscreen = struct {
+            render_width: i32,
+            render_height: i32,
+            samples: i32,
+            clear_color: Color,
+        };
+
+        const Display = struct {
+            clear_color: Color,
+        };
+    };
+
+    fn init(cfg: Config) !Self {
+        sgfx.setup(.{
+            .environment = sglue.environment(),
+            .logger = .{ .func = slog.func },
+        });
+        return .{
+            .offscreen_pass = try makeOffscreenPass(cfg.offscreen),
+            .display_pass = try makeDisplayPass(cfg.display),
+        };
+    }
+
+    fn draw(self: *Self, game: Game) !void {
+        _ = game;
+        // offscreen pass
+        sgfx.beginPass(self.offscreen_pass.pass);
+        // TODO: offscreen stages
+        sgfx.endPass();
+
+        // display pass
+        sgfx.beginPass(self.display_pass.pass);
+        // TODO: display stages
+        sgfx.endPass();
+    }
+
+    fn makeOffscreenPass(cfg: Config.Offscreen) !RenderPass {
+        const color_img = sgfx.makeImage(.{
+            .usage = .{ .color_attachment = true },
+            .width = cfg.render_width,
+            .height = cfg.render_height,
+            .pixel_format = .RGBA8,
+            .sample_count = cfg.samples,
+            .label = "color-image",
+        });
+        const depth_img = sgfx.makeImage(.{
+            .usage = .{ .depth_stencil_attachment = true },
+            .width = cfg.render_width,
+            .height = cfg.render_height,
+            .pixel_format = .DEPTH,
+            .sample_count = cfg.samples,
+            .label = "depth-image",
+        });
+        const pass = sgfx.Pass{
+            .action = .{ .colors = init: {
+                var c: [4]sgfx.ColorAttachmentAction = @splat(.{});
+                c[0] = .{
+                    .load_action = .CLEAR,
+                    .clear_value = cfg.clear_color.to(sgfx.Color),
+                };
+                break :init c;
+            } },
+            .attachments = .{
+                .colors = init: {
+                    var c: [4]sgfx.View = @splat(.{});
+                    c[0] = sgfx.makeView(.{
+                        .color_attachment = .{ .image = color_img },
+                    });
+                    break :init c;
+                },
+                .depth_stencil = sgfx.makeView(.{
+                    .depth_stencil_attachment = .{ .image = depth_img },
+                }),
+            },
+        };
+
+        return .{
+            .pass = pass,
+            .render_tgt = color_img,
+        };
+    }
+
+    fn makeDisplayPass(cfg: Config.Display) !RenderPass {
+        return .{
+            .pass = .{
+                .action = .{ .colors = init: {
+                    var c: [4]sgfx.ColorAttachmentAction = @splat(.{});
+                    c[0] = .{
+                        .load_action = .CLEAR,
+                        .clear_value = cfg.clear_color.to(sgfx.Color),
+                    };
+                    break :init c;
+                } },
+                .swapchain = sglue.swapchain(),
+            },
+        };
+    }
+};
+
+const RenderPass = struct {
+    pass: sgfx.Pass,
+    render_tgt: ?sgfx.Image = null,
+
+    const Self = @This();
+};
+
+const RenderStage = struct {
+    pipe: sgfx.Pipeline,
+    bind: sgfx.Bindings,
+
+    ptr: *anyopaque,
+    vtable: *const VTable,
+
+    const Self = @This();
+
+    const VTable = struct {
+        draw: *const fn (*anyopaque, Game) RenderStage.Error!void,
+    };
+
+    const Error = struct {};
+
+    fn draw(self: Self, game: *Game) RenderStage.Error!void {
+        sgfx.applyPipeline(self.pipe);
+        sgfx.applyBindings(self.bind);
+        self.vtable.draw(self.ptr, game);
     }
 };
 

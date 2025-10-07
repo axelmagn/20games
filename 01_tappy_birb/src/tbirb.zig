@@ -40,7 +40,7 @@ pub fn main() void {
         .height = main_app_config.windowHeight(),
         .sample_count = 4,
         .icon = .{ .sokol_default = true },
-        .window_title = "cube.zig",
+        .window_title = "Tappy Birb",
         .logger = .{ .func = slog.func },
     });
 }
@@ -127,6 +127,8 @@ pub const App = struct {
                 .clear_color = Color.black,
             },
         });
+
+        log.info("Detected Graphics Backend: {any}", .{sgfx.queryBackend()});
     }
 
     pub fn frame(self: *App) void {
@@ -381,7 +383,7 @@ const GameStage = struct {
             const score_delta = @divTrunc(walls_passed_after - walls_passed_before, 2);
             if (score_delta > 0) {
                 game.score += score_delta;
-                log.debug("score: {d}", .{game.score});
+                // log.debug("score: {d}", .{game.score});
             }
 
             for (0..game.entities.len) |i| {
@@ -1458,6 +1460,7 @@ const Renderer = struct {
     config: Config,
     offscreen_pass: RenderPass,
     color_quad_stage: ColorQuadStage,
+    debug_text_stage: DebugTextStage,
 
     display_pass: RenderPass,
     display_stage: DisplayStage,
@@ -1491,6 +1494,10 @@ const Renderer = struct {
             .config = cfg,
             .offscreen_pass = offscreen_pass,
             .color_quad_stage = ColorQuadStage.init(cfg.offscreen.samples),
+            .debug_text_stage = DebugTextStage.init(
+                @floatFromInt(cfg.offscreen.render_width),
+                @floatFromInt(cfg.offscreen.render_height),
+            ),
 
             .display_pass = makeDisplayPass(cfg.display),
             .display_stage = DisplayStage.init(
@@ -1504,8 +1511,8 @@ const Renderer = struct {
     fn draw(self: *Self, game: Game) void {
         // offscreen pass
         sgfx.beginPass(self.offscreen_pass.pass);
-        // TODO: offscreen stages
         self.color_quad_stage.draw(game);
+        self.debug_text_stage.draw(game);
         sgfx.endPass();
 
         // display pass
@@ -1735,6 +1742,7 @@ const ColorQuadStage = struct {
         for (game.entities) |entity_opt| {
             const entity = entity_opt orelse continue;
             const color_quad = entity.color_quad orelse continue;
+            if (!entity.visible) continue;
             const vs_params: shd_solid.VsParams = .{
                 .model = entity.modelTransform(),
                 .view = camera_view,
@@ -1824,10 +1832,15 @@ const DebugTextStage = struct {
     }
     pub fn draw(self: DebugTextStage, game: Game) void {
         self.resetCanvas();
+        const view_xform = game.camera.viewTransform();
         for (game.entities) |entity_opt| {
             const entity = entity_opt orelse continue;
             const debug_text = entity.debug_text orelse continue;
+            if (!entity.visible) continue;
+            const text_xform = entity.debugTextTransform();
+            self.drawText(debug_text, text_xform, view_xform);
         }
+        sdtx.draw();
     }
 
     pub fn resetCanvas(self: DebugTextStage) void {
@@ -1839,7 +1852,12 @@ const DebugTextStage = struct {
         sdtx.origin(0, 0);
     }
 
-    pub fn drawEntity(self: DebugTextStage, dtext: DebugText, camera: Camera) void {
+    pub fn drawText(
+        self: DebugTextStage,
+        dtext: DebugText,
+        text_xform: za.Mat4,
+        view_xform: za.Mat4,
+    ) void {
         sdtx.font(dtext.font_idx);
         sdtx.color3f(
             dtext.color.r,
@@ -1847,8 +1865,8 @@ const DebugTextStage = struct {
             dtext.color.b,
         );
 
-        const text_xform = entity.debugTextTransform();
-        const view_xform = camera.viewTransform();
+        // const text_xform = entity.debugTextTransform();
+        // const view_xform = camera.viewTransform();
         const clip_xform = za.orthographic(-3, 1, 3, -1, -1, 1);
         var pos = za.Vec4.new(0, 0, 0, 1);
         pos = text_xform.mulByVec4(pos);
@@ -1861,11 +1879,7 @@ const DebugTextStage = struct {
         pos.data[0] *= canvas_w / 8;
         pos.data[1] *= canvas_h / 8;
 
-        sdtx.pos(
-            // convert from grid coords to px coords
-            pos.x(),
-            pos.y(),
-        );
+        sdtx.pos(pos.x(), pos.y());
         sdtx.print("{s}", .{dtext.text});
     }
 };

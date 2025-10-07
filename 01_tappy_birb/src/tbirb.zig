@@ -121,10 +121,10 @@ pub const App = struct {
                 .render_width = app_config.windowWidth(),
                 .render_height = app_config.windowHeight(),
                 .samples = 1,
-                .clear_color = Color.gray1,
+                .clear_color = Color.gray0,
             },
             .display = .{
-                .clear_color = Color.gray0,
+                .clear_color = Color.black,
             },
         });
     }
@@ -1457,6 +1457,8 @@ const DisplayPipeline = struct {
 const Renderer = struct {
     config: Config,
     offscreen_pass: RenderPass,
+    color_quad_stage: ColorQuadStage,
+
     display_pass: RenderPass,
     display_stage: DisplayStage,
 
@@ -1488,6 +1490,8 @@ const Renderer = struct {
         return .{
             .config = cfg,
             .offscreen_pass = offscreen_pass,
+            .color_quad_stage = ColorQuadStage.init(cfg.offscreen.samples),
+
             .display_pass = makeDisplayPass(cfg.display),
             .display_stage = DisplayStage.init(
                 offscreen_pass.render_tgt.?,
@@ -1501,6 +1505,7 @@ const Renderer = struct {
         // offscreen pass
         sgfx.beginPass(self.offscreen_pass.pass);
         // TODO: offscreen stages
+        self.color_quad_stage.draw(game);
         sgfx.endPass();
 
         // display pass
@@ -1576,6 +1581,13 @@ const Renderer = struct {
     }
 };
 
+const RenderPass = struct {
+    pass: sgfx.Pass,
+    render_tgt: ?sgfx.Image = null,
+
+    const Self = @This();
+};
+
 const DisplayStage = struct {
     render_src: sgfx.Image,
     render_src_width: f32,
@@ -1594,10 +1606,6 @@ const DisplayStage = struct {
     const quad_idxs = [_]u16{
         0, 1, 2,
         2, 3, 0,
-    };
-
-    const vtable: RenderStage.VTable = .{
-        .draw = draw,
     };
 
     fn init(render_src: sgfx.Image, render_src_width: f32, render_src_height: f32) DisplayStage {
@@ -1694,29 +1702,171 @@ const DisplayStage = struct {
     }
 };
 
-const RenderPass = struct {
-    pass: sgfx.Pass,
-    render_tgt: ?sgfx.Image = null,
+const ColorQuadStage = struct {
+    pipe: sgfx.Pipeline = .{},
+    bind: sgfx.Bindings = .{},
 
-    const Self = @This();
-};
-
-const RenderStage = struct {
-    pipe: sgfx.Pipeline,
-    bind: sgfx.Bindings,
-
-    vtable: *const VTable,
-
-    const Self = @This();
-
-    const VTable = struct {
-        draw: *const fn (Game) void,
+    /// quad mesh, with bottom left corner at origin
+    const quad_verts = [_]f32{
+        0, 0,
+        0, 1,
+        1, 1,
+        1, 0,
+    };
+    const quad_idxs = [_]u16{
+        0, 1, 2,
+        2, 3, 0,
     };
 
-    fn draw(self: Self, game: Game) void {
+    fn init(samples: i32) ColorQuadStage {
+        return .{
+            .pipe = makePipeline(samples),
+            .bind = makeBindings(),
+        };
+    }
+
+    fn draw(self: ColorQuadStage, game: Game) void {
         sgfx.applyPipeline(self.pipe);
         sgfx.applyBindings(self.bind);
-        self.vtable.draw(game);
+
+        const camera = game.camera;
+        const camera_view = camera.viewTransform();
+
+        for (game.entities) |entity_opt| {
+            const entity = entity_opt orelse continue;
+            const color_quad = entity.color_quad orelse continue;
+            const vs_params: shd_solid.VsParams = .{
+                .model = entity.modelTransform(),
+                .view = camera_view,
+            };
+            sgfx.applyUniforms(shd_solid.UB_vs_params, sgfx.asRange(&vs_params));
+            const fs_params: shd_solid.FsParams = .{
+                .color = color_quad.color.to(za.Vec4).toArray(),
+            };
+            sgfx.applyUniforms(shd_solid.UB_fs_params, sgfx.asRange(&fs_params));
+            sgfx.draw(0, quad_idxs.len, 1);
+        }
+    }
+
+    fn makePipeline(samples: i32) sgfx.Pipeline {
+        const backend = sgfx.queryBackend();
+        const shader = sgfx.makeShader(shd_solid.solidShaderDesc(backend));
+        var vert_layout = sgfx.VertexLayoutState{};
+        vert_layout.attrs[shd_solid.ATTR_solid_position_in].format = .FLOAT2;
+        const pipe_desc: sgfx.PipelineDesc = .{
+            .shader = shader,
+            .layout = vert_layout,
+            .index_type = .UINT16,
+            .sample_count = samples,
+            .depth = .{
+                .pixel_format = .DEPTH,
+                .compare = .LESS_EQUAL,
+                .write_enabled = true,
+            },
+
+            .cull_mode = .NONE,
+        };
+        return sgfx.makePipeline(pipe_desc);
+    }
+
+    fn makeBindings() sgfx.Bindings {
+        return .{
+            .vertex_buffers = init: {
+                var vb: [sgfx.max_vertexbuffer_bindslots]sgfx.Buffer = @splat(.{});
+                vb[0] = sgfx.makeBuffer(.{
+                    .usage = .{ .vertex_buffer = true, .immutable = true },
+                    .data = sgfx.asRange(&quad_verts),
+                });
+                break :init vb;
+            },
+            .index_buffer = sgfx.makeBuffer(.{
+                .usage = .{ .index_buffer = true, .immutable = true },
+                .data = sgfx.asRange(&quad_idxs),
+            }),
+        };
+    }
+};
+
+const DebugTextStage = struct {
+    render_width: f32,
+    render_height: f32,
+
+    // font scale in pixels
+    font_px: f32 = 16,
+
+    const kc854 = 0;
+    const c64 = 1;
+    const oric = 2;
+
+    fn init(
+        render_width: f32,
+        render_height: f32,
+    ) DebugTextStage {
+        sdtx.setup(.{
+            .fonts = blk: {
+                var f: [8]sdtx.FontDesc = @splat(.{});
+                f[kc854] = sdtx.fontKc854();
+                f[c64] = sdtx.fontC64();
+                f[oric] = sdtx.fontOric();
+                break :blk f;
+            },
+            .logger = .{ .func = slog.func },
+            .context = .{
+                .color_format = .RGBA8,
+                .depth_format = .DEPTH,
+                .sample_count = 1,
+            },
+        });
+        return .{
+            .render_width = render_width,
+            .render_height = render_height,
+        };
+    }
+    pub fn draw(self: DebugTextStage, game: Game) void {
+        self.resetCanvas();
+        for (game.entities) |entity_opt| {
+            const entity = entity_opt orelse continue;
+            const debug_text = entity.debug_text orelse continue;
+        }
+    }
+
+    pub fn resetCanvas(self: DebugTextStage) void {
+        // sdtx.canvas(1, 1);
+        const font_scale = 8 / self.font_px;
+        const canvas_w = self.render_width * font_scale;
+        const canvas_h = self.render_height * font_scale;
+        sdtx.canvas(canvas_w, canvas_h);
+        sdtx.origin(0, 0);
+    }
+
+    pub fn drawEntity(self: DebugTextStage, dtext: DebugText, camera: Camera) void {
+        sdtx.font(dtext.font_idx);
+        sdtx.color3f(
+            dtext.color.r,
+            dtext.color.g,
+            dtext.color.b,
+        );
+
+        const text_xform = entity.debugTextTransform();
+        const view_xform = camera.viewTransform();
+        const clip_xform = za.orthographic(-3, 1, 3, -1, -1, 1);
+        var pos = za.Vec4.new(0, 0, 0, 1);
+        pos = text_xform.mulByVec4(pos);
+        pos = view_xform.mulByVec4(pos);
+        pos = clip_xform.mulByVec4(pos);
+
+        const font_scale = 8 / self.font_px;
+        const canvas_w = self.render_width * font_scale;
+        const canvas_h = self.render_height * font_scale;
+        pos.data[0] *= canvas_w / 8;
+        pos.data[1] *= canvas_h / 8;
+
+        sdtx.pos(
+            // convert from grid coords to px coords
+            pos.x(),
+            pos.y(),
+        );
+        sdtx.print("{s}", .{dtext.text});
     }
 };
 

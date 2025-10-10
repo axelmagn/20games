@@ -12,13 +12,14 @@ const assert = std.debug.assert;
 const heap = std.heap;
 const log = std.log;
 const sokol = @import("sokol");
-const slog = sokol.log;
-const sgfx = sokol.gfx;
 const sapp = sokol.app;
-const sglue = sokol.glue;
-const stime = sokol.time;
-const sshape = sokol.shape;
 const sdtx = sokol.debugtext;
+const sgfx = sokol.gfx;
+const sgl = sokol.gl;
+const sglue = sokol.glue;
+const slog = sokol.log;
+const sshape = sokol.shape;
+const stime = sokol.time;
 const za = @import("zalgebra");
 const lm32 = @import("zlm").as(f32);
 const shd_solid = @import("shaders/solid.glsl.zig");
@@ -889,6 +890,10 @@ const Renderer = struct {
             .logger = .{ .func = slog.func },
         });
 
+        sgl.setup(.{
+            .logger = .{ .func = slog.func },
+        });
+
         const offscreen_pass = makeOffscreenPass(cfg.offscreen);
         return .{
             .config = cfg,
@@ -1281,6 +1286,31 @@ const DebugTextStage = struct {
 
         sdtx.pos(pos.x(), pos.y());
         sdtx.print("{s}", .{dtext.text});
+    }
+};
+
+const TextStage = struct {
+    ctx: *fons.Context,
+
+    const font_cherry_bomb_data: [:0]const u8 = @embedFile("CherryBombOne-Regular.ttf");
+
+    fn init() !TextStage {
+        //calculate atlas dim to nearest power of 2
+        var atlas_dimf = 512 * sapp.dpiScale();
+        atlas_dimf = @exp2(@ceil(@log2(atlas_dimf)));
+        const atlas_dim: i32 = @intFromFloat(atlas_dimf);
+        const ctx = fons.Context.create(.{
+            .width = atlas_dim,
+            .height = atlas_dim,
+        }) orelse {
+            return error.create_fons_context_failed;
+        };
+
+        ctx.addFontMem("sans", font_cherry_bomb_data);
+
+        return .{
+            .ctx = ctx,
+        };
     }
 };
 

@@ -4,33 +4,43 @@ const c = @cImport({
     @cInclude("sokol_fontstash.h");
 });
 
-const max_states = c.FONS_MAX_STATES;
-const vertex_count = c.FONS_VERTEX_COUNT;
+/// FONScontext
+pub const Context = struct {
+    fons_ctx: *c.FONScontext,
 
-const Context = extern struct {
-    params: Params = .{},
-    itw: f32 = 0,
-    ith: f32 = 0,
-    tex_data: [*c]const u8 = null,
-    dirty_rect: [4]i32 = @splat(0),
-    fonts: [*c]*Font = null,
-    atlas: [*c]Atlas = null,
-    cfonts: i32 = 0,
-    nfonts: i32 = 0,
-    verts: [vertex_count * 2]f32 = @splat(0),
-    tcoords: [vertex_count * 2]f32 = @splat(0),
-    colors: [vertex_count]u32 = @splat(0),
-    nverts: i32 = 0,
-    scratch: [*c]u8 = null,
-    nscratch: i32 = 0,
-    states: [max_states]State = @splat(.{}),
-    nstates: i32 = 0,
-    handle_error: ?*const fn (*anyopaque, i32, i32) void = null,
-    error_uptr: *anyopaque = null,
+    pub fn create(desc: Descriptor) ?Context {
+        const ctx = c.sfons_create(@ptrCast(&desc)) orelse return null;
+        return .{ .fons_ctx = ctx };
+    }
+
+    pub fn destroy(self: *Context) void {
+        c.sfons_destroy(self.fons_ctx);
+    }
+
+    pub fn flush(self: *Context) void {
+        c.sfons_flush(self.fons_ctx);
+    }
+    // pub const destroy = c.sfons_destroy;
+    // pub const flush = c.sfons_flush;
+
+    pub fn addFontMem() void {
+        c.fonsAddFontMem();
+    }
 };
 
-// TODO
-const Params = extern struct {};
-const Font = extern struct {};
-const Atlas = extern struct {};
-const State = extern struct {};
+pub const rgba = c.sfons_rgba;
+
+pub const Descriptor = struct {
+    /// atlas width
+    width: i32,
+    /// atlas height
+    height: i32,
+    /// optional: allocator
+    allocator: Allocator = .{},
+};
+
+pub const Allocator = struct {
+    alloc_fn: ?*const fn (usize, *anyopaque) *opaque {} = null,
+    free_fn: ?*const fn (*anyopaque, *anyopaque) *opaque {} = null,
+    user_data: ?*anyopaque = null,
+};

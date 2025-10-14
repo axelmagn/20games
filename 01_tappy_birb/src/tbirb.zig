@@ -660,6 +660,7 @@ const Entity = struct {
     z_layer: i8 = 0,
     color_quad: ?ColorQuad = null,
     debug_text: ?DebugText = null,
+    text: ?Text = null,
 
     visible: bool = true,
 
@@ -855,6 +856,14 @@ const DebugText = struct {
     // alpha is ignored
     color: Color = Color.new(1, 1, 1, 1),
     offset: za.Vec2 = za.Vec2.zero(),
+};
+
+const Text = struct {
+    buf: [256]u8,
+    text: [:0]u8,
+    font: [:0]const u8,
+    size: f32,
+    color: Color,
 };
 
 const Renderer = struct {
@@ -1292,7 +1301,7 @@ const DebugTextStage = struct {
 const TextStage = struct {
     ctx: *fons.Context,
 
-    const font_cherry_bomb_data: [:0]const u8 = @embedFile("CherryBombOne-Regular.ttf");
+    var font_cherry_bomb_data: [:0]u8 = @embedFile("CherryBombOne-Regular.ttf");
 
     fn init() !TextStage {
         //calculate atlas dim to nearest power of 2
@@ -1306,11 +1315,28 @@ const TextStage = struct {
             return error.create_fons_context_failed;
         };
 
-        ctx.addFontMem("sans", font_cherry_bomb_data);
+        try ctx.addFontMem(
+            "normal",
+            font_cherry_bomb_data,
+            font_cherry_bomb_data.len,
+            false,
+        );
 
         return .{
             .ctx = ctx,
         };
+    }
+
+    fn draw(self: *TextStage, game: Game) void {}
+
+    fn drawText(self: *TextStage, position: za.Vec2, text: Text) void {
+        // sc.fonsSetFont(fs, state.font_normal);
+        // sc.fonsSetSize(fs, 124 * dpis);
+        // sc.fonsVertMetrics(fs, null, null, &lh);
+        // dx = sx;
+        // dy += lh;
+        // sc.fonsSetColor(fs, white);
+        // dx = sc.fonsDrawText(fs, dx, dy, "The quick ", null);
     }
 };
 

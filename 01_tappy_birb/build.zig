@@ -69,6 +69,7 @@ const AppConfig = struct {
             },
         });
         mod.linkLibrary(dep_sokol.artifact("sokol_clib"));
+        mod.addIncludePath(b.path("src/c/sokol_patch/"));
 
         if (is_wasm) {
             return self.buildWeb(b, mod, shader_src_steps, dep_sokol);

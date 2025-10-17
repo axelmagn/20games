@@ -56,9 +56,21 @@ pub const Context = struct {
     pub fn setFont(self: *Context, font: FontID) void {
         c.fonsSetFont(self.fons_ctx, font);
     }
+
+    pub fn drawText(
+        self: *Context,
+        x: f32,
+        y: f32,
+        text: [:0]const u8,
+        end: ?[:0]const u8,
+    ) f32 {
+        return c.fonsDrawText(self.fons_ctx, x, y, @ptrCast(text), @ptrCast(end));
+    }
 };
 
 pub const FontID = c_int;
 pub const Color = u32;
 
 pub const rgba = c.sfons_rgba;
+
+pub const Descriptor = c.sfons_desc_t;

@@ -11,6 +11,7 @@ const debug = std.debug;
 const assert = std.debug.assert;
 const heap = std.heap;
 const log = std.log;
+const fmt = std.fmt;
 const sokol = @import("sokol");
 const sapp = sokol.app;
 const sdtx = sokol.debugtext;
@@ -124,6 +125,9 @@ pub const App = struct {
             },
             .display = .{
                 .clear_color = Color.black,
+            },
+            .text = .{
+                // defaults for now
             },
         });
 
@@ -494,6 +498,15 @@ const Color = struct {
                 .a = self.a,
             },
             za.Vec4 => za.Vec4.new(self.r, self.g, self.b, self.a),
+            fons.Color => blk: {
+                const max = math.maxInt(u8);
+                break :blk fons.rgba(
+                    @intFromFloat(math.clamp(self.r * max, 0, max)),
+                    @intFromFloat(math.clamp(self.g * max, 0, max)),
+                    @intFromFloat(math.clamp(self.b * max, 0, max)),
+                    @intFromFloat(math.clamp(self.a * max, 0, max)),
+                );
+            },
             else => @compileError("unexpected color type: " ++ @typeName(T)),
         };
     }
@@ -859,11 +872,10 @@ const DebugText = struct {
 };
 
 const Text = struct {
-    buf: [256]u8,
-    text: [:0]u8,
-    font: [:0]const u8,
-    size: f32,
-    color: Color,
+    buf: [256]u8 = @splat(0),
+    text: [:0]u8 = undefined,
+    size: f32 = 32,
+    color: Color = Color.white,
 };
 
 const Renderer = struct {
@@ -871,6 +883,7 @@ const Renderer = struct {
     offscreen_pass: RenderPass,
     color_quad_stage: ColorQuadStage,
     debug_text_stage: DebugTextStage,
+    text_stage: TextStage,
 
     display_pass: RenderPass,
     display_stage: DisplayStage,
@@ -880,6 +893,7 @@ const Renderer = struct {
     const Config = struct {
         offscreen: Offscreen,
         display: Display,
+        text: TextStage.Config,
 
         const Offscreen = struct {
             render_width: i32,
@@ -904,7 +918,7 @@ const Renderer = struct {
         });
 
         const offscreen_pass = makeOffscreenPass(cfg.offscreen);
-        return .{
+        return Self{
             .config = cfg,
             .offscreen_pass = offscreen_pass,
             .color_quad_stage = ColorQuadStage.init(cfg.offscreen.samples),
@@ -912,6 +926,7 @@ const Renderer = struct {
                 @floatFromInt(cfg.offscreen.render_width),
                 @floatFromInt(cfg.offscreen.render_height),
             ),
+            .text_stage = try TextStage.init(cfg.text),
 
             .display_pass = makeDisplayPass(cfg.display),
             .display_stage = DisplayStage.init(
@@ -927,6 +942,7 @@ const Renderer = struct {
         sgfx.beginPass(self.offscreen_pass.pass);
         self.color_quad_stage.draw(game);
         self.debug_text_stage.draw(game);
+        self.text_stage.draw(game);
         sgfx.endPass();
 
         // display pass
@@ -1299,37 +1315,64 @@ const DebugTextStage = struct {
 };
 
 const TextStage = struct {
-    ctx: *fons.Context,
+    ctx: fons.Context,
+    font_id: fons.FontID,
+    dpi_scale: f32,
 
-    var font_cherry_bomb_data: [:0]u8 = @embedFile("CherryBombOne-Regular.ttf");
+    config: Config,
 
-    fn init() !TextStage {
+    var font_cherry_bomb_data: [:0]const u8 = @embedFile("CherryBombOne-Regular.ttf");
+
+    const Config = struct {
+        font_size: f32 = 124,
+        font_color: Color = Color.white,
+    };
+
+    fn init(config: Config) !TextStage {
         //calculate atlas dim to nearest power of 2
-        var atlas_dimf = 512 * sapp.dpiScale();
+        const dpi_scale = sapp.dpiScale();
+        var atlas_dimf = 512 * dpi_scale;
         atlas_dimf = @exp2(@ceil(@log2(atlas_dimf)));
         const atlas_dim: i32 = @intFromFloat(atlas_dimf);
-        const ctx = fons.Context.create(.{
+        var ctx = fons.Context.create(.{
             .width = atlas_dim,
             .height = atlas_dim,
         }) orelse {
             return error.create_fons_context_failed;
         };
 
-        try ctx.addFontMem(
+        const font_id = try ctx.addFontMem(
             "normal",
-            font_cherry_bomb_data,
+            @constCast(font_cherry_bomb_data),
             font_cherry_bomb_data.len,
             false,
         );
 
         return .{
             .ctx = ctx,
+            .font_id = font_id,
+            .dpi_scale = dpi_scale,
+            .config = config,
         };
     }
 
-    fn draw(self: *TextStage, game: Game) void {}
+    fn draw(self: TextStage, game: Game) void {
+        _ = game;
+        self.ctx.setFont(self.font_id);
 
-    fn drawText(self: *TextStage, position: za.Vec2, text: Text) void {
+        // TEST
+        var text = Text{};
+        text.text = fmt.bufPrintZ(&text.buf, "Hello World!", .{}) catch unreachable;
+
+        self.drawText(10, 10, text);
+    }
+
+    fn drawText(self: TextStage, position: za.Vec2, text: Text) void {
+        self.ctx.setSize(text.size * self.dpi_scale);
+        self.ctx.setColor(text.color.to(fons.Color));
+
+        self.ctx.drawText(position.x(), position.y(), text.text, null);
+
         // sc.fonsSetFont(fs, state.font_normal);
         // sc.fonsSetSize(fs, 124 * dpis);
         // sc.fonsVertMetrics(fs, null, null, &lh);

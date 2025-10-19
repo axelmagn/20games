@@ -68,8 +68,8 @@ const AppConfig = struct {
                 .{ .name = "zalgebra", .module = dep_zalgebra.module("zalgebra") },
             },
         });
-        mod.linkLibrary(dep_sokol.artifact("sokol_clib"));
         mod.addIncludePath(b.path("src/c/sokol_patch/"));
+        mod.linkLibrary(dep_sokol.artifact("sokol_clib"));
 
         if (is_wasm) {
             return self.buildWeb(b, mod, shader_src_steps, dep_sokol);
@@ -158,12 +158,15 @@ const AppConfig = struct {
         mod_sokol.addIncludePath(dep_sokol.path("src/sokol/c"));
 
         const cflags = try extract_sokol_cflags(dep_sokol);
+
+        // try inspect_sokol(dep_sokol);
         mod_sokol.addCSourceFile(.{
             .file = b.path("src/c/sokol_patch/fontstash.c"),
             .flags = cflags,
             .language = .c,
         });
         mod_sokol.link_libc = true;
+        mod_sokol.link_libcpp = true;
     }
 
     /// just grab the cflags of the first file we find

@@ -115,7 +115,7 @@ pub const App = struct {
         // self.renderer.init(.{ .offscreen = .{ .render_size = offscreen_size } });
         // self.test_renderer.setup();
 
-        self.renderer = try Renderer.init(.{
+        self.renderer = Renderer.init(.{
             // TODO: make part of app config
             .offscreen = .{
                 .render_width = app_config.windowWidth(),
@@ -129,7 +129,7 @@ pub const App = struct {
             .text = .{
                 // defaults for now
             },
-        });
+        }) catch unreachable; // TODO: handle error
 
         log.info("Detected Graphics Backend: {any}", .{sgfx.queryBackend()});
     }
@@ -441,8 +441,12 @@ const GameStage = struct {
                 if (game.entities[i] == null) continue;
                 const entity: *Entity = &(game.entities[i].?);
                 if (entity.score_text) {
-                    assert(entity.debug_text != null);
-                    entity.debug_text.?.text = score_text_const;
+                    if (entity.debug_text != null) {
+                        entity.debug_text.?.text = score_text_const;
+                    }
+                    if (entity.text != null) {
+                        entity.text.?.text = score_text_const;
+                    }
                 }
             }
         }
@@ -703,9 +707,6 @@ const Entity = struct {
             .color_quad = .{
                 .color = app_config.player.color,
             },
-            // .debug_text = .{
-            //     .text = "birb",
-            // },
             .player = true,
         };
     }
@@ -769,7 +770,10 @@ const Entity = struct {
         const cy = cfg.windowHeightF() / 2;
         return Entity{
             .position = za.Vec2.new(cx, cy),
-            .debug_text = .{
+            // .debug_text = .{
+            //     .text = "tap to start",
+            // },
+            .text = .{
                 .text = "tap to start",
             },
             .splash_only = true,
@@ -781,7 +785,10 @@ const Entity = struct {
         const cy = cfg.windowHeightF() / 2;
         return Entity{
             .position = za.Vec2.new(cx, cy),
-            .debug_text = .{
+            // .debug_text = .{
+            //     .text = "game over (R to restart)",
+            // },
+            .text = .{
                 .text = "game over (R to restart)",
             },
             .game_over_only = true,
@@ -795,7 +802,10 @@ const Entity = struct {
         const cy = cfg.windowHeightF() * 7 / 8;
         return Entity{
             .position = za.Vec2.new(cx, cy),
-            .debug_text = .{
+            // .debug_text = .{
+            //     .text = "  0",
+            // },
+            .text = .{
                 .text = "  0",
             },
             .playing_only = true,
@@ -872,10 +882,17 @@ const DebugText = struct {
 };
 
 const Text = struct {
-    buf: [256]u8 = @splat(0),
-    text: [:0]u8 = undefined,
+    text: []const u8,
     size: f32 = 32,
     color: Color = Color.white,
+
+    fn print(
+        text: *Text,
+        comptime fmt_str: []const u8,
+        args: anytype,
+    ) fmt.BufPrintError!void {
+        text.text = try fmt.bufPrintZ(&text.buf, fmt_str, args);
+    }
 };
 
 const Renderer = struct {
@@ -915,6 +932,8 @@ const Renderer = struct {
 
         sgl.setup(.{
             .logger = .{ .func = slog.func },
+            // .sample_count = 4,
+            // .depth_format = .DEPTH,
         });
 
         const offscreen_pass = makeOffscreenPass(cfg.offscreen);
@@ -939,17 +958,23 @@ const Renderer = struct {
 
     fn draw(self: *Self, game: Game) void {
         // offscreen pass
+
         sgfx.beginPass(self.offscreen_pass.pass);
         self.color_quad_stage.draw(game);
         self.debug_text_stage.draw(game);
-        self.text_stage.draw(game);
         sgfx.endPass();
 
         // display pass
         // sgfx.beginPass(self.display_pass.pass);
         // we have to reconstruct the display pass each time for the correct resolution
+        sgl.defaults();
+        sgl.matrixModeProjection();
+        sgl.ortho(0, sapp.widthf(), sapp.heightf(), 0, -1, 1);
+
         sgfx.beginPass(makeDisplayPass(self.config.display).pass);
         self.display_stage.draw(game);
+        self.text_stage.draw(game);
+        sgl.draw();
         sgfx.endPass();
 
         sgfx.commit();
@@ -1356,30 +1381,29 @@ const TextStage = struct {
         };
     }
 
-    fn draw(self: TextStage, game: Game) void {
-        _ = game;
+    fn draw(self: *TextStage, game: Game) void {
+        self.ctx.clearState();
         self.ctx.setFont(self.font_id);
 
-        // TEST
-        var text = Text{};
-        text.text = fmt.bufPrintZ(&text.buf, "Hello World!", .{}) catch unreachable;
+        for (game.entities) |entity_opt| {
+            const entity = entity_opt orelse continue;
+            const text = entity.text orelse continue;
+            if (!entity.visible) continue;
+            self.drawText(entity.position, text);
+        }
 
-        self.drawText(10, 10, text);
+        self.ctx.flush();
     }
 
-    fn drawText(self: TextStage, position: za.Vec2, text: Text) void {
+    fn drawText(self: *TextStage, position: za.Vec2, text: Text) void {
+        // log.debug("drawing text: \"{s}\" @ {any}", .{ text.text, position });
         self.ctx.setSize(text.size * self.dpi_scale);
         self.ctx.setColor(text.color.to(fons.Color));
 
-        self.ctx.drawText(position.x(), position.y(), text.text, null);
+        var buf: [256]u8 = undefined;
+        const t = fmt.bufPrintZ(&buf, "{s}", .{text.text}) catch unreachable;
 
-        // sc.fonsSetFont(fs, state.font_normal);
-        // sc.fonsSetSize(fs, 124 * dpis);
-        // sc.fonsVertMetrics(fs, null, null, &lh);
-        // dx = sx;
-        // dy += lh;
-        // sc.fonsSetColor(fs, white);
-        // dx = sc.fonsDrawText(fs, dx, dy, "The quick ", null);
+        _ = self.ctx.drawText(position.x(), sapp.heightf() - position.y(), t, null);
     }
 };
 

@@ -24,8 +24,10 @@ pub const Context = struct {
     pub fn flush(self: *Context) void {
         c.sfons_flush(self.fons_ctx);
     }
-    // pub const destroy = c.sfons_destroy;
-    // pub const flush = c.sfons_flush;
+
+    pub fn clearState(self: *Context) void {
+        c.fonsClearState(self.fons_ctx);
+    }
 
     pub fn addFontMem(
         self: *Context,
@@ -41,7 +43,7 @@ pub const Context = struct {
             @intCast(data_size),
             @intFromBool(free_data),
         );
-        if (res == c.FONS_INVALID) return .Invalid;
+        if (res == c.FONS_INVALID) return Error.Invalid;
         return res;
     }
 

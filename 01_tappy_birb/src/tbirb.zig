@@ -25,7 +25,9 @@ const za = @import("zalgebra");
 const lm32 = @import("zlm").as(f32);
 const shd_solid = @import("shaders/solid.glsl.zig");
 const shd_display = @import("shaders/display.glsl.zig");
+const shd_sprite = @import("shaders/sprite.glsl.zig");
 const fons = @import("fontstash.zig");
+const zstbi = @import("zstbi");
 
 /// root global for app state
 var main_app: *App = undefined;
@@ -111,6 +113,9 @@ pub const App = struct {
         self.arena = std.heap.ArenaAllocator.init(fba.allocator());
 
         stime.setup();
+
+        zstbi.init(gpa);
+
         self.game.init(app_config);
         // self.renderer.init(.{ .offscreen = .{ .render_size = offscreen_size } });
         // self.test_renderer.setup();
@@ -144,8 +149,10 @@ pub const App = struct {
         self.game.handleInputEvent(ev);
     }
 
-    pub fn cleanup(_: *App) void {
+    pub fn cleanup(self: *App) void {
+        self.renderer.deinit();
         sgfx.shutdown();
+        zstbi.deinit();
     }
 };
 
@@ -677,6 +684,7 @@ const Entity = struct {
     z_layer: i8 = 0,
     color_quad: ?ColorQuad = null,
     debug_text: ?DebugText = null,
+    sprite: ?Sprite = null,
     text: ?Text = null,
 
     visible: bool = true,
@@ -704,8 +712,11 @@ const Entity = struct {
             .acceleration = za.Vec2.new(0, app_config.player.acc),
             .size = za.Vec2.new(size, size),
             .z_layer = 30,
-            .color_quad = .{
-                .color = app_config.player.color,
+            // .color_quad = .{
+            //     .color = app_config.player.color,
+            // },
+            .sprite = Sprite{
+                .tile_size = za.Vec2.new(8, 8),
             },
             .player = true,
         };
@@ -766,13 +777,10 @@ const Entity = struct {
 
     pub fn createSplashText() Entity {
         const cfg = main_app.config;
-        const cx = cfg.windowWidthF() / 2 - 96;
+        const cx = cfg.windowWidthF() / 2 - 54;
         const cy = cfg.windowHeightF() / 2;
         return Entity{
             .position = za.Vec2.new(cx, cy),
-            // .debug_text = .{
-            //     .text = "tap to start",
-            // },
             .text = .{
                 .text = "tap to start",
             },
@@ -781,13 +789,10 @@ const Entity = struct {
     }
     pub fn createGameOverText() Entity {
         const cfg = main_app.config;
-        const cx = cfg.windowWidthF() / 2 - 192;
+        const cx = cfg.windowWidthF() / 2 - 128;
         const cy = cfg.windowHeightF() / 2;
         return Entity{
             .position = za.Vec2.new(cx, cy),
-            // .debug_text = .{
-            //     .text = "game over (R to restart)",
-            // },
             .text = .{
                 .text = "game over (R to restart)",
             },
@@ -802,9 +807,6 @@ const Entity = struct {
         const cy = cfg.windowHeightF() * 7 / 8;
         return Entity{
             .position = za.Vec2.new(cx, cy),
-            // .debug_text = .{
-            //     .text = "  0",
-            // },
             .text = .{
                 .text = "  0",
             },
@@ -873,6 +875,15 @@ const ColorQuad = struct {
     color: Color,
 };
 
+const Sprite = struct {
+    tile_pos: za.Vec2 = za.Vec2.zero(),
+    tile_size: za.Vec2,
+    offset: za.Vec2 = za.Vec2.zero(),
+    flip_x: bool = false,
+    flip_y: bool = false,
+    tint: Color = Color.white,
+};
+
 const DebugText = struct {
     text: []const u8,
     font_idx: u8 = 0,
@@ -899,6 +910,7 @@ const Renderer = struct {
     config: Config,
     offscreen_pass: RenderPass,
     color_quad_stage: ColorQuadStage,
+    sprite_stage: SpriteStage,
     debug_text_stage: DebugTextStage,
     text_stage: TextStage,
 
@@ -932,8 +944,6 @@ const Renderer = struct {
 
         sgl.setup(.{
             .logger = .{ .func = slog.func },
-            // .sample_count = 4,
-            // .depth_format = .DEPTH,
         });
 
         const offscreen_pass = makeOffscreenPass(cfg.offscreen);
@@ -941,6 +951,7 @@ const Renderer = struct {
             .config = cfg,
             .offscreen_pass = offscreen_pass,
             .color_quad_stage = ColorQuadStage.init(cfg.offscreen.samples),
+            .sprite_stage = try SpriteStage.init(cfg.offscreen.samples),
             .debug_text_stage = DebugTextStage.init(
                 @floatFromInt(cfg.offscreen.render_width),
                 @floatFromInt(cfg.offscreen.render_height),
@@ -961,17 +972,17 @@ const Renderer = struct {
 
         sgfx.beginPass(self.offscreen_pass.pass);
         self.color_quad_stage.draw(game);
+        self.sprite_stage.draw(game);
         self.debug_text_stage.draw(game);
         sgfx.endPass();
 
         // display pass
-        // sgfx.beginPass(self.display_pass.pass);
         // we have to reconstruct the display pass each time for the correct resolution
+        sgfx.beginPass(makeDisplayPass(self.config.display).pass);
         sgl.defaults();
         sgl.matrixModeProjection();
         sgl.ortho(0, sapp.widthf(), sapp.heightf(), 0, -1, 1);
 
-        sgfx.beginPass(makeDisplayPass(self.config.display).pass);
         self.display_stage.draw(game);
         self.text_stage.draw(game);
         sgl.draw();
@@ -1040,6 +1051,10 @@ const Renderer = struct {
                 .swapchain = sglue.swapchain(),
             },
         };
+    }
+
+    fn deinit(self: *Renderer) void {
+        self.sprite_stage.deinit();
     }
 };
 
@@ -1250,6 +1265,128 @@ const ColorQuadStage = struct {
     }
 };
 
+const SpriteStage = struct {
+    pipe: sgfx.Pipeline = .{},
+    bind: sgfx.Bindings = .{},
+    atlas: zstbi.Image = undefined,
+
+    const atlas_data: []const u8 = @embedFile("atlas.png");
+
+    const quad_verts = [_]f32{
+        -1, -1, 0, 1,
+        -1, 1,  0, 0,
+        1,  1,  1, 0,
+        1,  -1, 1, 1,
+    };
+
+    const quad_idxs = [_]u16{
+        0, 1, 2,
+        2, 3, 0,
+    };
+
+    pub fn init(samples: i32) !SpriteStage {
+        const atlas_stb_img = try zstbi.Image.loadFromMemory(atlas_data, 0);
+        return SpriteStage{
+            .pipe = makePipeline(samples),
+            .bind = try makeBindings(atlas_stb_img),
+            .atlas = atlas_stb_img,
+        };
+    }
+
+    pub fn makePipeline(samples: i32) sgfx.Pipeline {
+        const backend = sgfx.queryBackend();
+        const shader = sgfx.makeShader(shd_sprite.spriteShaderDesc(backend));
+        var vert_layout = sgfx.VertexLayoutState{};
+        vert_layout.attrs[shd_sprite.ATTR_sprite_position_in].format = .FLOAT2;
+        vert_layout.attrs[shd_sprite.ATTR_sprite_uv_in].format = .FLOAT2;
+        const pipe_desc: sgfx.PipelineDesc = .{
+            .shader = shader,
+            .layout = vert_layout,
+            .index_type = .UINT16,
+            .sample_count = samples,
+            .depth = .{
+                .pixel_format = .DEPTH,
+                .compare = .LESS_EQUAL,
+                .write_enabled = true,
+            },
+
+            .cull_mode = .NONE,
+        };
+        return sgfx.makePipeline(pipe_desc);
+    }
+
+    pub fn makeBindings(atlas: zstbi.Image) !sgfx.Bindings {
+        const atlas_gfx_img = sgfx.makeImage(.{
+            .width = @intCast(atlas.width),
+            .height = @intCast(atlas.height),
+            .data = blk: {
+                var data = sgfx.ImageData{};
+                data.subimage[0][0] = sgfx.asRange(atlas.data);
+                break :blk data;
+            },
+        });
+
+        var bind = sgfx.Bindings{};
+        bind.vertex_buffers[0] = sgfx.makeBuffer(.{
+            .usage = .{ .vertex_buffer = true, .immutable = true },
+            .data = sgfx.asRange(&quad_verts),
+        });
+        bind.index_buffer = sgfx.makeBuffer(.{
+            .usage = .{ .index_buffer = true, .immutable = true },
+            .data = sgfx.asRange(&quad_idxs),
+        });
+        bind.views[shd_sprite.VIEW_tex] = sgfx.makeView(.{
+            .texture = .{ .image = atlas_gfx_img },
+        });
+        bind.samplers[shd_sprite.SMP_smp] = sgfx.makeSampler(.{});
+
+        return bind;
+    }
+
+    pub fn draw(self: SpriteStage, game: Game) void {
+        sgfx.applyPipeline(self.pipe);
+        sgfx.applyBindings(self.bind);
+
+        const camera = game.camera;
+        const camera_view = camera.viewTransform();
+        const uv_factor = za.Vec2.one().div(za.Vec2.new(
+            @floatFromInt(self.atlas.width),
+            @floatFromInt(self.atlas.height),
+        ));
+
+        for (game.entities) |entity_opt| {
+            const entity = entity_opt orelse continue;
+            const sprite = entity.sprite orelse continue;
+            if (!entity.visible) continue;
+            const vs_view_params = shd_sprite.VsViewParams{
+                .model = entity.modelTransform(),
+                .view = camera_view,
+            };
+            const vs_tile_params = shd_sprite.VsTileParams{
+                .tile_uv = sprite.tile_pos.mul(uv_factor).toArray(),
+                .tile_uv_size = sprite.tile_size.mul(uv_factor).toArray(),
+            };
+            sgfx.applyUniforms(
+                shd_sprite.UB_vs_view_params,
+                sgfx.asRange(&vs_view_params),
+            );
+            sgfx.applyUniforms(
+                shd_sprite.UB_vs_tile_params,
+                sgfx.asRange(&vs_tile_params),
+            );
+            const fs_params = shd_sprite.FsParams{
+                .tint = sprite.tint.to(za.Vec4).toArray(),
+            };
+            sgfx.applyUniforms(shd_sprite.UB_fs_params, sgfx.asRange(&fs_params));
+            sgfx.draw(0, quad_idxs.len, 1);
+        }
+    }
+
+    pub fn deinit(self: *SpriteStage) void {
+        self.atlas.deinit();
+    }
+};
+
 const DebugTextStage = struct {
     render_width: f32,
     render_height: f32,
@@ -1299,7 +1436,6 @@ const DebugTextStage = struct {
     }
 
     pub fn resetCanvas(self: DebugTextStage) void {
-        // sdtx.canvas(1, 1);
         const font_scale = 8 / self.font_px;
         const canvas_w = self.render_width * font_scale;
         const canvas_h = self.render_height * font_scale;
@@ -1320,8 +1456,6 @@ const DebugTextStage = struct {
             dtext.color.b,
         );
 
-        // const text_xform = entity.debugTextTransform();
-        // const view_xform = camera.viewTransform();
         const clip_xform = za.orthographic(-3, 1, 3, -1, -1, 1);
         var pos = za.Vec4.new(0, 0, 0, 1);
         pos = text_xform.mulByVec4(pos);
@@ -1346,7 +1480,7 @@ const TextStage = struct {
 
     config: Config,
 
-    var font_cherry_bomb_data: [:0]const u8 = @embedFile("CherryBombOne-Regular.ttf");
+    var font_cherry_bomb_data: [:0]const u8 = @embedFile("Chewy-Regular.ttf");
 
     const Config = struct {
         font_size: f32 = 124,
@@ -1396,14 +1530,18 @@ const TextStage = struct {
     }
 
     fn drawText(self: *TextStage, position: za.Vec2, text: Text) void {
-        // log.debug("drawing text: \"{s}\" @ {any}", .{ text.text, position });
         self.ctx.setSize(text.size * self.dpi_scale);
         self.ctx.setColor(text.color.to(fons.Color));
 
         var buf: [256]u8 = undefined;
         const t = fmt.bufPrintZ(&buf, "{s}", .{text.text}) catch unreachable;
 
-        _ = self.ctx.drawText(position.x(), sapp.heightf() - position.y(), t, null);
+        _ = self.ctx.drawText(
+            position.x(),
+            sapp.heightf() - position.y(),
+            t,
+            null,
+        );
     }
 };
 

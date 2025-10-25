@@ -20,6 +20,7 @@ pub fn build(b: *Build) !void {
         .shader_srcs = &.{
             "src/shaders/solid.glsl",
             "src/shaders/display.glsl",
+            "src/shaders/sprite.glsl",
         },
     };
     const run_step_inner = try tbirb.build(b);
@@ -50,6 +51,8 @@ const AppConfig = struct {
             .optimize = self.optimize,
         });
 
+        const dep_zstbi = b.dependency("zstbi", .{});
+
         try patch_sokol_with_fontstash(b, dep_sokol);
 
         const shader_src_steps: []*Step =
@@ -66,6 +69,7 @@ const AppConfig = struct {
             .imports = &.{
                 .{ .name = "sokol", .module = dep_sokol.module("sokol") },
                 .{ .name = "zalgebra", .module = dep_zalgebra.module("zalgebra") },
+                .{ .name = "zstbi", .module = dep_zstbi.module("root") },
             },
         });
         mod.addIncludePath(b.path("src/c/sokol_patch/"));

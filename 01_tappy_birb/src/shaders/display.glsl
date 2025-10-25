@@ -8,7 +8,6 @@ in vec2 position;
 out vec2 uv;
 
 void main() {
-	// TODO: screen math
 	gl_Position = vec4(position * scale + offset, 0.0, 1.0);
 	uv = (position + 1) / 2;
 }

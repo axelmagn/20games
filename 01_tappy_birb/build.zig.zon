@@ -10,6 +10,10 @@
             .url = "git+https://github.com/kooparse/zalgebra.git#4a85a7102f0b82f445395049f0c660c70264d170",
             .hash = "zalgebra-0.0.0-aaiVSpBuAQD7rPuHRn9qd3wREcRVSnN95Ves7atzsiQY",
         },
+        .zstbi = .{
+            .url = "git+https://github.com/zig-gamedev/zstbi#2c4b3100ccb7aed90ecc9439030899764e2a8d47",
+            .hash = "zstbi-0.11.0-dev-L0Ea_yaWBwAHwFoCuyjkFyaiSsbjt4UOrkntR0c_nmzz",
+        },
     },
     .minimum_zig_version = "0.15.1",
     .paths = .{""},

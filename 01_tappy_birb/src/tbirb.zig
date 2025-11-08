@@ -532,6 +532,8 @@ const Color = struct {
     const gray1 = Color.new(0.4, 0.4, 0.4, 1.0);
     const gray2 = Color.new(0.6, 0.6, 0.6, 1.0);
     const gray3 = Color.new(0.8, 0.8, 0.8, 1.0);
+
+    const magenta = Color.new(1.0, 0.0, 1.0, 1.0);
 };
 
 const Rect = struct {

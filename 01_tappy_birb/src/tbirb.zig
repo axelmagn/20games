@@ -65,7 +65,8 @@ export fn sInit() void {
         debug.panic("initialization error: {any}", .{err});
     };
     main_app.* = .{};
-    main_app.init(allocator, main_app_config);
+    const calloc = heap.c_allocator;
+    main_app.init(allocator, calloc, main_app_config);
 }
 
 export fn sFrame() void {
@@ -85,6 +86,7 @@ export fn sCleanup() void {
 pub const App = struct {
     /// general purpose allocator
     gpa: mem.Allocator = undefined,
+    calloc: mem.Allocator = undefined,
     arena: std.heap.ArenaAllocator = undefined,
     arena_buf: []u8 = undefined,
 
@@ -104,9 +106,10 @@ pub const App = struct {
         height: i32 = 960,
     } = .{},
 
-    pub fn init(self: *App, gpa: mem.Allocator, app_config: AppConfig) void {
+    pub fn init(self: *App, gpa: mem.Allocator, calloc: mem.Allocator, app_config: AppConfig) void {
         self.gpa = gpa;
         self.config = app_config;
+        self.calloc = calloc;
 
         self.arena_buf = gpa.alloc(u8, app_config.arena_size) catch |err| debug.panic("{any}", .{err});
         var fba = std.heap.FixedBufferAllocator.init(self.arena_buf);
@@ -114,7 +117,7 @@ pub const App = struct {
 
         stime.setup();
 
-        zstbi.init(gpa);
+        zstbi.init(calloc);
 
         self.game.init(app_config);
         // self.renderer.init(.{ .offscreen = .{ .render_size = offscreen_size } });
@@ -151,8 +154,8 @@ pub const App = struct {
 
     pub fn cleanup(self: *App) void {
         self.renderer.deinit();
-        sgfx.shutdown();
         zstbi.deinit();
+        sgfx.shutdown();
     }
 };
 
@@ -1383,6 +1386,7 @@ const SpriteStage = struct {
     }
 
     pub fn deinit(self: *SpriteStage) void {
+        // _ = self;
         self.atlas.deinit();
     }
 };

@@ -1312,7 +1312,17 @@ const SpriteStage = struct {
                 .compare = .LESS_EQUAL,
                 .write_enabled = true,
             },
-
+            .colors = blk: {
+                var colors: [sgfx.max_color_attachments]sgfx.ColorTargetState = @splat(.{});
+                colors[0] = sgfx.ColorTargetState{
+                    .blend = .{
+                        .enabled = true,
+                        .src_factor_rgb = sgfx.BlendFactor.SRC_ALPHA,
+                        .dst_factor_rgb = sgfx.BlendFactor.ONE_MINUS_SRC_ALPHA,
+                    },
+                };
+                break :blk colors;
+            },
             .cull_mode = .NONE,
         };
         return sgfx.makePipeline(pipe_desc);
